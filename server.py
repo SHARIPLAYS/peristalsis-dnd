@@ -31,30 +31,34 @@ async def handler(websocket):
             
             # --- ЛОГИКА ЧАСОВ ---
             if data.get("type") == "update":
-                # Хост прислал новые данные (запуск, пауза или перемотка)
                 clock_state.update(data["state"])
                 clock_state["lastUpdateTimestamp"] = time.time()
-                
-                # Мгновенно рассылаем обновленное состояние всем игрокам
                 if clients:
                     websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
             
-            # --- НОВАЯ ЛОГИКА ИНВЕНТАРЯ И ТРЕВОГИ ---
+            # --- РЕГИСТРАЦИЯ ИГРОКА (НОВОЕ) ---
+            elif data.get("type") == "register_player":
+                player_name = data.get("name")
+                if player_name and player_name not in players_data:
+                    # Создаем пустой инвентарь для нового имени
+                    players_data[player_name] = {"anxiety": [], "inventory": []}
+                    # Сообщаем всем, что появился новый игрок
+                    if clients:
+                        websockets.broadcast(clients, json.dumps({"type": "sync_players", "playersData": players_data}))
+
+            # --- ЛОГИКА ИНВЕНТАРЯ И ТРЕВОГИ ---
             elif data.get("type") == "update_player_data":
                 target = data.get("target")
-                data_type = data.get("dataType")  # 'anxiety' или 'inventory'
+                data_type = data.get("dataType")
                 item = data.get("item")
 
                 if target and data_type and item:
-                    # Если игрока еще нет в базе, создаем для него пустые массивы
                     if target not in players_data:
                         players_data[target] = {"anxiety": [], "inventory": []}
                     
-                    # Добавляем выданный предмет в нужную категорию
                     if data_type in players_data[target]:
                         players_data[target][data_type].append(item)
                     
-                    # Мгновенно рассылаем обновленную базу всем клиентам
                     if clients:
                         websockets.broadcast(clients, json.dumps({"type": "sync_players", "playersData": players_data}))
 
