@@ -11,6 +11,10 @@ clock_state = {
     "baseTime": 43200, 
     "lastUpdateTimestamp": time.time()
 }
+
+# НОВОЕ: Глобальное состояние инвентаря и статусов игроков
+players_data = {}
+
 clients = set()
 
 async def handler(websocket):
@@ -19,8 +23,13 @@ async def handler(websocket):
         # При подключении нового игрока сразу отправляем ему актуальное время
         await websocket.send(json.dumps({"type": "sync", "state": clock_state}))
         
+        # НОВОЕ: Сразу отправляем данные об инвентаре всех игроков
+        await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
+        
         async for message in websocket:
             data = json.loads(message)
+            
+            # --- ЛОГИКА ЧАСОВ ---
             if data.get("type") == "update":
                 # Хост прислал новые данные (запуск, пауза или перемотка)
                 clock_state.update(data["state"])
@@ -29,6 +38,26 @@ async def handler(websocket):
                 # Мгновенно рассылаем обновленное состояние всем игрокам
                 if clients:
                     websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
+            
+            # --- НОВАЯ ЛОГИКА ИНВЕНТАРЯ И ТРЕВОГИ ---
+            elif data.get("type") == "update_player_data":
+                target = data.get("target")
+                data_type = data.get("dataType")  # 'anxiety' или 'inventory'
+                item = data.get("item")
+
+                if target and data_type and item:
+                    # Если игрока еще нет в базе, создаем для него пустые массивы
+                    if target not in players_data:
+                        players_data[target] = {"anxiety": [], "inventory": []}
+                    
+                    # Добавляем выданный предмет в нужную категорию
+                    if data_type in players_data[target]:
+                        players_data[target][data_type].append(item)
+                    
+                    # Мгновенно рассылаем обновленную базу всем клиентам
+                    if clients:
+                        websockets.broadcast(clients, json.dumps({"type": "sync_players", "playersData": players_data}))
+
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
