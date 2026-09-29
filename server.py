@@ -5,25 +5,33 @@ import time
 import os
 
 # Глобальное состояние часов
-# baseTime: время в секундах (например, 12:00 = 43200)
 clock_state = {
     "isRunning": False,
     "baseTime": 43200, 
     "lastUpdateTimestamp": time.time()
 }
 
-# НОВОЕ: Глобальное состояние инвентаря и статусов игроков
-players_data = {}
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ТЕЛА ---
+# Вынесена наверх, чтобы не ломать логику if-elif
+def get_default_body():
+    return {
+        "head": {"hp": 8, "maxHp": 8, "def": 0, "name": "Голова"},
+        "torso": {"hp": 30, "maxHp": 30, "def": 0, "name": "Торс"},
+        "leftArm": {"hp": 10, "maxHp": 10, "def": 0, "name": "Левая рука"},
+        "rightArm": {"hp": 10, "maxHp": 10, "def": 0, "name": "Правая рука"},
+        "leftLeg": {"hp": 15, "maxHp": 15, "def": 0, "name": "Левая нога"},
+        "rightLeg": {"hp": 15, "maxHp": 15, "def": 0, "name": "Правая нога"}
+    }
 
+# Глобальное состояние инвентаря и статусов игроков
+players_data = {}
 clients = set()
 
 async def handler(websocket):
     clients.add(websocket)
     try:
-        # При подключении нового игрока сразу отправляем ему актуальное время
+        # При подключении нового игрока сразу отправляем ему актуальное время и данные
         await websocket.send(json.dumps({"type": "sync", "state": clock_state}))
-        
-        # НОВОЕ: Сразу отправляем данные об инвентаре всех игроков
         await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
         
         async for message in websocket:
@@ -36,17 +44,6 @@ async def handler(websocket):
                 if clients:
                     websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
             
-            # --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ТЕЛА ---
-            def get_default_body():
-                return {
-                    "head": {"hp": 8, "maxHp": 8, "def": 0, "name": "Голова"},
-                    "torso": {"hp": 30, "maxHp": 30, "def": 0, "name": "Торс"},
-                    "leftArm": {"hp": 10, "maxHp": 10, "def": 0, "name": "Левая рука"},
-                    "rightArm": {"hp": 10, "maxHp": 10, "def": 0, "name": "Правая рука"},
-                    "leftLeg": {"hp": 15, "maxHp": 15, "def": 0, "name": "Левая нога"},
-                    "rightLeg": {"hp": 15, "maxHp": 15, "def": 0, "name": "Правая нога"}
-                }
-
             # --- РЕГИСТРАЦИЯ ИГРОКА ---
             elif data.get("type") == "register_player":
                 player_name = data.get("name")
@@ -63,7 +60,6 @@ async def handler(websocket):
                 new_def = data.get("def")
                 
                 if target in players_data:
-                    # Если у игрока нет тела в базе, создаем его перед обновлением
                     if "body" not in players_data[target]:
                         players_data[target]["body"] = get_default_body()
                         
@@ -115,11 +111,10 @@ async def handler(websocket):
         clients.remove(websocket)
 
 async def main():
-    # Render автоматически задает переменную окружения PORT
     port = int(os.environ.get("PORT", 8765))
     async with websockets.serve(handler, "0.0.0.0", port):
         print(f"Server started on port {port}")
-        await asyncio.Future()  # Работаем бесконечно
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
