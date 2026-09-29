@@ -62,7 +62,11 @@ async def handler(websocket):
                 new_hp = data.get("hp")
                 new_def = data.get("def")
                 
-                if target in players_data and "body" in players_data[target]:
+                if target in players_data:
+                    # Если у игрока нет тела в базе, создаем его перед обновлением
+                    if "body" not in players_data[target]:
+                        players_data[target]["body"] = get_default_body()
+                        
                     if part_id in players_data[target]["body"]:
                         players_data[target]["body"][part_id]["hp"] = new_hp
                         players_data[target]["body"][part_id]["def"] = new_def
