@@ -5,7 +5,6 @@ import time
 import os
 import uuid
 
-# Глобальное состояние часов
 clock_state = {
     "isRunning": False,
     "baseTime": 43200,
@@ -13,7 +12,6 @@ clock_state = {
 }
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_default_body():
     return {
         "head":     {"hp": 8,  "maxHp": 8,  "def": 0, "name": "Голова"},
@@ -27,8 +25,8 @@ def get_default_body():
 
 def get_default_player():
     return {
-        "anxiety": [],          # состояния / дебаффы
-        "inventory": [],        # экипировка
+        "anxiety": [],
+        "inventory": [],
         "body": get_default_body(),
         "morale": 10,
         "anxietyLevel": 0.0
@@ -55,13 +53,10 @@ def ensure_player_shape(name):
 players_data = {}
 clients = set()
 
-# --- СОЦИАЛЬНОЕ СОСТОЯНИЕ ---
-ground_items = []        # [{"id", "item", "dataType", "droppedBy", "droppedAt"}]
-shared_inventory = []    # [{"id", "item", "dataType", "putBy", "putAt"}]
+# --- СОЦИАЛЬНОЕ СОСТОЯНИЕ (без выброса на землю) ---
+shared_inventory = []    # [{"id","item","dataType","putBy","putAt"}]
 pending_requests = []    # [{"id","from","to","text","createdAt"}]
-pending_trades = []      # [{"id","from","to","fromDataType","fromItemId","fromItem",
-                          #   "toDataType","toItemId","toItem",
-                          #   "fromConfirmed","toConfirmed","createdAt"}]
+pending_trades = []      # [{"id","from","to",...}]
 
 
 def new_id():
@@ -100,7 +95,6 @@ async def broadcast_social():
             clients,
             json.dumps({
                 "type": "sync_social",
-                "groundItems": ground_items,
                 "sharedInventory": shared_inventory,
                 "pendingRequests": pending_requests,
                 "pendingTrades": pending_trades
@@ -123,7 +117,6 @@ async def handler(websocket):
         await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
         await websocket.send(json.dumps({
             "type": "sync_social",
-            "groundItems": ground_items,
             "sharedInventory": shared_inventory,
             "pendingRequests": pending_requests,
             "pendingTrades": pending_trades
@@ -246,7 +239,7 @@ async def handler(websocket):
                         await broadcast_players()
 
             # ================================================
-            # СОЦИАЛЬНЫЕ ВЗАИМОДЕЙСТВИЯ
+            # СОЦИАЛЬНЫЕ ВЗАИМОДЕЙСТВИЯ (без выброса на землю)
             # ================================================
 
             # --- ПЕРЕДАЧА ПРЕДМЕТА ---
@@ -265,46 +258,6 @@ async def handler(websocket):
                         await broadcast_players()
                         await broadcast_event("transfer", {
                             "from": src, "to": dst, "item": item, "dataType": data_type
-                        })
-
-            # --- ВЫБРОСИТЬ НА ЗЕМЛЮ ---
-            elif msg_type == "drop_item":
-                src = data.get("from")
-                item_id = data.get("itemId")
-                data_type = data.get("dataType", "inventory")
-                if src and item_id:
-                    ensure_player_shape(src)
-                    bucket = players_data[src].get(data_type, [])
-                    item = remove_item(bucket, item_id)
-                    if item:
-                        entry = {
-                            "id": new_id(),
-                            "item": item,
-                            "dataType": data_type,
-                            "droppedBy": src,
-                            "droppedAt": time.time()
-                        }
-                        ground_items.append(entry)
-                        await broadcast_players()
-                        await broadcast_social()
-                        await broadcast_event("dropped", {
-                            "from": src, "item": item, "groundId": entry["id"]
-                        })
-
-            # --- ПОДНЯТЬ С ЗЕМЛИ ---
-            elif msg_type == "take_ground_item":
-                player = data.get("player")
-                ground_id = data.get("groundItemId")
-                if player and ground_id:
-                    ensure_player_shape(player)
-                    entry = next((g for g in ground_items if g["id"] == ground_id), None)
-                    if entry:
-                        ground_items.remove(entry)
-                        players_data[player].setdefault(entry["dataType"], []).append(entry["item"])
-                        await broadcast_players()
-                        await broadcast_social()
-                        await broadcast_event("picked_up", {
-                            "player": player, "item": entry["item"]
                         })
 
             # --- ПОЛОЖИТЬ В ОБЩИЙ ---
@@ -398,7 +351,7 @@ async def handler(websocket):
                             "toDataType": "inventory",
                             "toItemId": to_item_id,
                             "toItem": to_item,
-                            "fromConfirmed": True,   # предложивший сразу подтверждает
+                            "fromConfirmed": True,
                             "toConfirmed": False,
                             "createdAt": time.time()
                         }
