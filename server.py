@@ -3,6 +3,7 @@ import websockets
 import json
 import time
 import os
+import uuid
 
 # Глобальное состояние часов
 clock_state = {
@@ -26,16 +27,15 @@ def get_default_body():
 
 def get_default_player():
     return {
-        "anxiety": [],          # список состояний / дебаффов
-        "inventory": [],        # список экипировки
+        "anxiety": [],          # состояния / дебаффы
+        "inventory": [],        # экипировка
         "body": get_default_body(),
-        "morale": 10,           # 0..10
-        "anxietyLevel": 0.0     # 0..4, может быть дробным
+        "morale": 10,
+        "anxietyLevel": 0.0
     }
 
 
 def ensure_player_shape(name):
-    """Гарантирует, что у игрока есть все поля (для старых сохранений)."""
     if name not in players_data:
         players_data[name] = get_default_player()
         return
@@ -55,6 +55,36 @@ def ensure_player_shape(name):
 players_data = {}
 clients = set()
 
+# --- СОЦИАЛЬНОЕ СОСТОЯНИЕ ---
+ground_items = []        # [{"id", "item", "dataType", "droppedBy", "droppedAt"}]
+shared_inventory = []    # [{"id", "item", "dataType", "putBy", "putAt"}]
+pending_requests = []    # [{"id","from","to","text","createdAt"}]
+pending_trades = []      # [{"id","from","to","fromDataType","fromItemId","fromItem",
+                          #   "toDataType","toItemId","toItem",
+                          #   "fromConfirmed","toConfirmed","createdAt"}]
+
+
+def new_id():
+    return uuid.uuid4().hex[:12]
+
+
+def find_item(lst, item_id):
+    if not isinstance(lst, list):
+        return None
+    for i in lst:
+        if str(i.get("id")) == str(item_id):
+            return i
+    return None
+
+
+def remove_item(lst, item_id):
+    if not isinstance(lst, list):
+        return None
+    for idx, i in enumerate(lst):
+        if str(i.get("id")) == str(item_id):
+            return lst.pop(idx)
+    return None
+
 
 async def broadcast_players():
     if clients:
@@ -64,12 +94,40 @@ async def broadcast_players():
         )
 
 
+async def broadcast_social():
+    if clients:
+        websockets.broadcast(
+            clients,
+            json.dumps({
+                "type": "sync_social",
+                "groundItems": ground_items,
+                "sharedInventory": shared_inventory,
+                "pendingRequests": pending_requests,
+                "pendingTrades": pending_trades
+            })
+        )
+
+
+async def broadcast_event(kind, data):
+    if clients:
+        websockets.broadcast(
+            clients,
+            json.dumps({"type": "event", "kind": kind, "data": data})
+        )
+
+
 async def handler(websocket):
     clients.add(websocket)
     try:
-        # Сразу после подключения отправляем актуальное состояние
         await websocket.send(json.dumps({"type": "sync", "state": clock_state}))
         await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
+        await websocket.send(json.dumps({
+            "type": "sync_social",
+            "groundItems": ground_items,
+            "sharedInventory": shared_inventory,
+            "pendingRequests": pending_requests,
+            "pendingTrades": pending_trades
+        }))
 
         async for message in websocket:
             try:
@@ -83,13 +141,9 @@ async def handler(websocket):
             if msg_type == "update":
                 clock_state.update(data["state"])
                 clock_state["lastUpdateTimestamp"] = time.time()
-                if clients:
-                    websockets.broadcast(
-                        clients,
-                        json.dumps({"type": "sync", "state": clock_state})
-                    )
+                websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
 
-            # --- РЕГИСТРАЦИЯ ИГРОКА ---
+            # --- РЕГИСТРАЦИЯ ---
             elif msg_type == "register_player":
                 name = data.get("name")
                 if name:
@@ -99,30 +153,39 @@ async def handler(websocket):
                     else:
                         ensure_player_shape(name)
 
-            # --- ИЗМЕНЕНИЕ СТАТОВ (тело / мораль / тревога) ---
+            # --- ОБНОВЛЕНИЕ СТАТОВ ---
             elif msg_type == "update_body":
                 target = data.get("target")
                 part_id = data.get("part")
                 new_hp = data.get("hp")
                 new_def = data.get("def", 0)
+                new_max = data.get("maxHp")
 
                 if target:
                     ensure_player_shape(target)
                     p = players_data[target]
 
                     if part_id == "morale":
-                        # Мораль: дробное не запрещено, но фактически целое
                         try:
-                            p["morale"] = max(0.0, min(10.0, float(new_hp)))
+                            p["morale"] = max(0.0, float(new_hp))
                         except (TypeError, ValueError):
                             pass
+                        if new_max is not None:
+                            try:
+                                p["maxMorale"] = max(0, int(new_max))
+                            except (TypeError, ValueError):
+                                pass
 
                     elif part_id == "anxietyLevel":
-                        # Тревога: 0..4, десятичная
                         try:
-                            p["anxietyLevel"] = max(0.0, min(4.0, float(new_hp)))
+                            p["anxietyLevel"] = max(0.0, float(new_hp))
                         except (TypeError, ValueError):
                             pass
+                        if new_max is not None:
+                            try:
+                                p["maxAnxiety"] = max(0, int(new_max))
+                            except (TypeError, ValueError):
+                                pass
 
                     elif part_id in p["body"]:
                         try:
@@ -132,7 +195,13 @@ async def handler(websocket):
                             hp, df = None, None
                         if hp is not None:
                             max_hp = p["body"][part_id].get("maxHp", hp)
-                            p["body"][part_id]["hp"]  = max(0, min(max_hp, hp))
+                            if new_max is not None:
+                                try:
+                                    max_hp = max(0, int(new_max))
+                                    p["body"][part_id]["maxHp"] = max_hp
+                                except (TypeError, ValueError):
+                                    pass
+                            p["body"][part_id]["hp"] = max(0, min(max_hp, hp))
                             p["body"][part_id]["def"] = max(0, df)
 
                     await broadcast_players()
@@ -158,7 +227,7 @@ async def handler(websocket):
                     bucket = players_data[target].get(data_type)
                     if isinstance(bucket, list):
                         players_data[target][data_type] = [
-                            i for i in bucket if i.get("id") != item_id
+                            i for i in bucket if str(i.get("id")) != str(item_id)
                         ]
                         await broadcast_players()
 
@@ -171,10 +240,214 @@ async def handler(websocket):
                     bucket = players_data[target].get(data_type)
                     if isinstance(bucket, list):
                         for i in range(len(bucket)):
-                            if bucket[i].get("id") == new_item.get("id"):
+                            if str(bucket[i].get("id")) == str(new_item.get("id")):
                                 bucket[i] = new_item
                                 break
                         await broadcast_players()
+
+            # ================================================
+            # СОЦИАЛЬНЫЕ ВЗАИМОДЕЙСТВИЯ
+            # ================================================
+
+            # --- ПЕРЕДАЧА ПРЕДМЕТА ---
+            elif msg_type == "transfer_item":
+                src = data.get("from")
+                dst = data.get("to")
+                data_type = data.get("dataType", "inventory")
+                item_id = data.get("itemId")
+                if src and dst and item_id:
+                    ensure_player_shape(src)
+                    ensure_player_shape(dst)
+                    bucket = players_data[src].get(data_type, [])
+                    item = remove_item(bucket, item_id)
+                    if item:
+                        players_data[dst].setdefault(data_type, []).append(item)
+                        await broadcast_players()
+                        await broadcast_event("transfer", {
+                            "from": src, "to": dst, "item": item, "dataType": data_type
+                        })
+
+            # --- ВЫБРОСИТЬ НА ЗЕМЛЮ ---
+            elif msg_type == "drop_item":
+                src = data.get("from")
+                item_id = data.get("itemId")
+                data_type = data.get("dataType", "inventory")
+                if src and item_id:
+                    ensure_player_shape(src)
+                    bucket = players_data[src].get(data_type, [])
+                    item = remove_item(bucket, item_id)
+                    if item:
+                        entry = {
+                            "id": new_id(),
+                            "item": item,
+                            "dataType": data_type,
+                            "droppedBy": src,
+                            "droppedAt": time.time()
+                        }
+                        ground_items.append(entry)
+                        await broadcast_players()
+                        await broadcast_social()
+                        await broadcast_event("dropped", {
+                            "from": src, "item": item, "groundId": entry["id"]
+                        })
+
+            # --- ПОДНЯТЬ С ЗЕМЛИ ---
+            elif msg_type == "take_ground_item":
+                player = data.get("player")
+                ground_id = data.get("groundItemId")
+                if player and ground_id:
+                    ensure_player_shape(player)
+                    entry = next((g for g in ground_items if g["id"] == ground_id), None)
+                    if entry:
+                        ground_items.remove(entry)
+                        players_data[player].setdefault(entry["dataType"], []).append(entry["item"])
+                        await broadcast_players()
+                        await broadcast_social()
+                        await broadcast_event("picked_up", {
+                            "player": player, "item": entry["item"]
+                        })
+
+            # --- ПОЛОЖИТЬ В ОБЩИЙ ---
+            elif msg_type == "shared_put":
+                src = data.get("from")
+                item_id = data.get("itemId")
+                data_type = data.get("dataType", "inventory")
+                if src and item_id:
+                    ensure_player_shape(src)
+                    bucket = players_data[src].get(data_type, [])
+                    item = remove_item(bucket, item_id)
+                    if item:
+                        entry = {
+                            "id": new_id(),
+                            "item": item,
+                            "dataType": data_type,
+                            "putBy": src,
+                            "putAt": time.time()
+                        }
+                        shared_inventory.append(entry)
+                        await broadcast_players()
+                        await broadcast_social()
+                        await broadcast_event("shared_put", {
+                            "from": src, "item": item, "sharedId": entry["id"]
+                        })
+
+            # --- ВЗЯТЬ ИЗ ОБЩЕГО ---
+            elif msg_type == "shared_take":
+                player = data.get("player")
+                shared_id = data.get("sharedItemId")
+                if player and shared_id:
+                    ensure_player_shape(player)
+                    entry = next((s for s in shared_inventory if s["id"] == shared_id), None)
+                    if entry:
+                        shared_inventory.remove(entry)
+                        players_data[player].setdefault(entry["dataType"], []).append(entry["item"])
+                        await broadcast_players()
+                        await broadcast_social()
+                        await broadcast_event("shared_take", {
+                            "player": player, "item": entry["item"]
+                        })
+
+            # --- ЗАПРОС ПРЕДМЕТА ---
+            elif msg_type == "request_item":
+                src = data.get("from")
+                dst = data.get("to")
+                text = (data.get("text") or "").strip()
+                if src and dst and text:
+                    req = {
+                        "id": new_id(),
+                        "from": src,
+                        "to": dst,
+                        "text": text,
+                        "createdAt": time.time()
+                    }
+                    pending_requests.append(req)
+                    await broadcast_social()
+                    await broadcast_event("request_created", req)
+
+            elif msg_type == "request_response":
+                req_id = data.get("requestId")
+                accept = bool(data.get("accept"))
+                player = data.get("player")
+                req = next((r for r in pending_requests if r["id"] == req_id), None)
+                if req and req["to"] == player:
+                    pending_requests.remove(req)
+                    await broadcast_social()
+                    await broadcast_event("request_response", {
+                        "request": req, "accept": accept
+                    })
+
+            # --- ТРЕЙД ---
+            elif msg_type == "trade_propose":
+                src = data.get("from")
+                dst = data.get("to")
+                from_item_id = data.get("fromItemId")
+                to_item_id = data.get("toItemId")
+                if src and dst and from_item_id and to_item_id:
+                    ensure_player_shape(src)
+                    ensure_player_shape(dst)
+                    from_item = find_item(players_data[src].get("inventory", []), from_item_id)
+                    to_item = find_item(players_data[dst].get("inventory", []), to_item_id)
+                    if from_item and to_item:
+                        trade = {
+                            "id": new_id(),
+                            "from": src,
+                            "to": dst,
+                            "fromDataType": "inventory",
+                            "fromItemId": from_item_id,
+                            "fromItem": from_item,
+                            "toDataType": "inventory",
+                            "toItemId": to_item_id,
+                            "toItem": to_item,
+                            "fromConfirmed": True,   # предложивший сразу подтверждает
+                            "toConfirmed": False,
+                            "createdAt": time.time()
+                        }
+                        pending_trades.append(trade)
+                        await broadcast_social()
+                        await broadcast_event("trade_proposed", trade)
+
+            elif msg_type == "trade_confirm":
+                trade_id = data.get("tradeId")
+                player = data.get("player")
+                trade = next((t for t in pending_trades if t["id"] == trade_id), None)
+                if trade and player in (trade["from"], trade["to"]):
+                    if player == trade["from"]:
+                        trade["fromConfirmed"] = True
+                    else:
+                        trade["toConfirmed"] = True
+
+                    if trade["fromConfirmed"] and trade["toConfirmed"]:
+                        src = trade["from"]
+                        dst = trade["to"]
+                        f_item = remove_item(players_data[src].get(trade["fromDataType"], []), trade["fromItemId"])
+                        t_item = remove_item(players_data[dst].get(trade["toDataType"], []), trade["toItemId"])
+                        if f_item and t_item:
+                            players_data[dst].setdefault(trade["fromDataType"], []).append(f_item)
+                            players_data[src].setdefault(trade["toDataType"], []).append(t_item)
+                            pending_trades.remove(trade)
+                            await broadcast_players()
+                            await broadcast_social()
+                            await broadcast_event("trade_completed", {
+                                "from": src, "to": dst,
+                                "fromItem": f_item, "toItem": t_item
+                            })
+                        else:
+                            pending_trades.remove(trade)
+                            await broadcast_social()
+                            await broadcast_event("trade_failed", {"tradeId": trade_id})
+                    else:
+                        await broadcast_social()
+
+            elif msg_type == "trade_cancel":
+                trade_id = data.get("tradeId")
+                player = data.get("player")
+                trade = next((t for t in pending_trades if t["id"] == trade_id), None)
+                if trade and (not player or player in (trade["from"], trade["to"])):
+                    pending_trades.remove(trade)
+                    await broadcast_social()
+                    await broadcast_event("trade_cancelled", {
+                        "tradeId": trade_id, "by": player
+                    })
 
     except websockets.exceptions.ConnectionClosed:
         pass
