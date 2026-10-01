@@ -3,7 +3,9 @@ import websockets
 import json
 import time
 import os
+import ssl
 import uuid
+import traceback
 import redis.asyncio as redis
 
 # ================================================================
@@ -110,14 +112,14 @@ async def save_state():
             pipe.set("dnd:pending_trades", json.dumps(pending_trades, ensure_ascii=False))
             await pipe.execute()
         except Exception as e:
-            print(f"[save_state] Ошибка: {e}")
+            print(f"[save_state] Ошибка: {e}", flush=True)
 
 
 async def load_state():
     """Загружает состояние из Redis при старте сервера."""
     global base_royals
     if not r:
-        print("[load_state] REDIS_URL не задан, пропускаем загрузку")
+        print("[load_state] REDIS_URL не задан, пропускаем загрузку", flush=True)
         return
     try:
         pipe = r.pipeline()
@@ -154,9 +156,10 @@ async def load_state():
         print(f"[load_state] Состояние загружено: "
               f"{len(players_data)} игроков, "
               f"{len(base_inventory)} предметов в шкафчике, "
-              f"{len(item_templates)} заготовок")
+              f"{len(item_templates)} заготовок", flush=True)
     except Exception as e:
-        print(f"[load_state] Ошибка: {e}")
+        print(f"[load_state] Ошибка: {e}", flush=True)
+        traceback.print_exc()
 
 
 async def autosave_loop():
@@ -834,22 +837,62 @@ async def main():
     global r
     port = int(os.environ.get("PORT", 8765))
 
+    print("[main] ========== STARTUP ==========", flush=True)
+    print(f"[main] PORT={port}", flush=True)
+    print(f"[main] REDIS_URL is set: {bool(REDIS_URL)}", flush=True)
+
     if REDIS_URL:
+        url_clean = REDIS_URL.strip()
         try:
-            r = redis.from_url(REDIS_URL, decode_responses=True)
-            await r.ping()
-            print("[main] Redis подключён успешно")
+            host_part = url_clean.split('@')[-1]
+            print(f"[main] REDIS_URL host part: {host_part}", flush=True)
+            print(f"[main] REDIS_URL scheme: {url_clean[:8]}...", flush=True)
+        except Exception:
+            pass
+
+        try:
+            print("[main] Подключаемся к Redis с явным SSL...", flush=True)
+
+            ssl_params = {}
+            if url_clean.startswith("rediss://"):
+                ssl_params = {
+                    "ssl": True,
+                    "ssl_cert_reqs": ssl.CERT_NONE,
+                }
+                print("[main] Обнаружен rediss:// — включаем SSL", flush=True)
+
+            r = redis.from_url(
+                url_clean,
+                decode_responses=True,
+                socket_keepalive=True,
+                health_check_interval=30,
+                socket_connect_timeout=10,
+                **ssl_params,
+            )
+
+            pong = await r.ping()
+            print(f"[main] Redis ping ответил: {pong}", flush=True)
+
+            test_val = f"startup_ok_{int(time.time())}"
+            await r.set("dnd:startup_test", test_val)
+            readback = await r.get("dnd:startup_test")
+            print(f"[main] Тестовая запись в Redis: {readback}", flush=True)
+
             await load_state()
+            print("[main] load_state() завершён", flush=True)
+
         except Exception as e:
-            print(f"[main] Не удалось подключиться к Redis: {e}")
+            print(f"[main] ОШИБКА Redis: {e}", flush=True)
+            traceback.print_exc()
             r = None
     else:
-        print("[main] REDIS_URL не задан, работаем без персистентности")
+        print("[main] REDIS_URL не задан!", flush=True)
 
     asyncio.create_task(autosave_loop())
+    print("[main] autosave_loop запущен", flush=True)
 
     async with websockets.serve(handler, "0.0.0.0", port):
-        print(f"Server started on port {port}")
+        print(f"[main] Server started on port {port}", flush=True)
         await asyncio.Future()
 
 
