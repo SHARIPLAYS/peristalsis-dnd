@@ -371,15 +371,16 @@ async def broadcast_event(kind, data):
 
 
 async def handler(websocket):
-    global base_royals
     clients.add(websocket)
     try:
         await websocket.send(json.dumps({"type": "sync", "state": clock_state}))
         await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
         await websocket.send(json.dumps({
             "type": "sync_social",
-            "baseInventory": base_inventory, "baseRoyals": base_royals,
-            "itemTemplates": item_templates, "pendingTrades": pending_trades
+            "baseInventories": base_inventories, 
+            "baseRoyalsDict": base_royals_dict,
+            "itemTemplates": item_templates, 
+            "pendingTrades": pending_trades
         }))
 
         async for message in websocket:
