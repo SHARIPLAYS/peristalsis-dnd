@@ -35,7 +35,8 @@ def get_default_player():
         "inventory": [],
         "body": get_default_body(),
         "morale": 10,
-        "anxietyLevel": 0.0
+        "anxietyLevel": 0.0,
+        "royals": 0
     }
 
 
@@ -54,13 +55,15 @@ def ensure_player_shape(name):
         p["morale"] = 10
     if "anxietyLevel" not in p:
         p["anxietyLevel"] = 0.0
+    if "royals" not in p:
+        p["royals"] = 0
 
 
 players_data = {}
 clients = set()
 
-# --- ГЛОБАЛЬНЫЕ КОЛЛЕКЦИИ ---
 base_inventory = []           # Шкафчик базы
+base_royals = 0               # Общие роялы в шкафчике
 item_templates = []           # Заготовки хоста
 pending_trades = []           # Активные обмены
 
@@ -69,11 +72,17 @@ def new_id():
     return uuid.uuid4().hex[:12]
 
 
+def safe_int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def add_item_to_bucket(bucket, item, count=None):
-    """Складывает item в bucket с учётом стакинга (name+desc+category)."""
     if count is None:
-        count = int(item.get("count", 1) or 1)
-    count = max(1, int(count))
+        count = safe_int(item.get("count", 1), 1)
+    count = max(1, count)
     name = item.get("name", "") or ""
     desc = item.get("desc", "") or ""
     cat = safe_category(item.get("category", "other"))
@@ -106,17 +115,13 @@ def find_item(lst, item_id):
 
 
 def take_from_stack(lst, item_id, count):
-    """Забирает count из стека. Возвращает (snapshot, actual_count) или None."""
     item = find_item(lst, item_id)
     if not item:
         return None
     avail = int(item.get("count", 1) or 1)
     if avail <= 0:
         return None
-    try:
-        count = int(count)
-    except (TypeError, ValueError):
-        return None
+    count = safe_int(count, 0)
     if count <= 0:
         return None
     take = min(count, avail)
@@ -149,6 +154,7 @@ async def broadcast_social():
             json.dumps({
                 "type": "sync_social",
                 "baseInventory": base_inventory,
+                "baseRoyals": base_royals,
                 "itemTemplates": item_templates,
                 "pendingTrades": pending_trades
             })
@@ -163,7 +169,20 @@ async def broadcast_event(kind, data):
         )
 
 
+def trade_side_summary(trade, prefix):
+    """Возвращает {type, ...} с описанием одной стороны сделки."""
+    t = trade.get(prefix + "Type", "item")
+    if t == "royals":
+        return {"type": "royals", "amount": trade.get(prefix + "Royals", 0)}
+    return {
+        "type": "item",
+        "item": trade.get(prefix + "Item"),
+        "count": trade.get(prefix + "Count", 1)
+    }
+
+
 async def handler(websocket):
+    global base_royals
     clients.add(websocket)
     try:
         await websocket.send(json.dumps({"type": "sync", "state": clock_state}))
@@ -171,6 +190,7 @@ async def handler(websocket):
         await websocket.send(json.dumps({
             "type": "sync_social",
             "baseInventory": base_inventory,
+            "baseRoyals": base_royals,
             "itemTemplates": item_templates,
             "pendingTrades": pending_trades
         }))
@@ -252,6 +272,37 @@ async def handler(websocket):
 
                     await broadcast_players()
 
+            # --- РОЯЛЫ ИГРОКА (мастер) ---
+            elif msg_type == "update_royals":
+                target = data.get("target")
+                amount = data.get("amount")
+                if target:
+                    ensure_player_shape(target)
+                    players_data[target]["royals"] = max(0, safe_int(amount, 0))
+                    await broadcast_players()
+
+            # --- РОЯЛЫ БАЗЫ (мастер) ---
+            elif msg_type == "base_royals_set":
+                base_royals = max(0, safe_int(data.get("amount"), 0))
+                await broadcast_social()
+
+            # --- ПЕРЕДАЧА РОЯЛОВ ---
+            elif msg_type == "transfer_royals":
+                src = data.get("from")
+                dst = data.get("to")
+                amount = max(0, safe_int(data.get("amount"), 0))
+                if src and dst and amount > 0:
+                    ensure_player_shape(src)
+                    ensure_player_shape(dst)
+                    src_r = int(players_data[src].get("royals", 0) or 0)
+                    if src_r >= amount:
+                        players_data[src]["royals"] = src_r - amount
+                        players_data[dst]["royals"] = int(players_data[dst].get("royals", 0) or 0) + amount
+                        await broadcast_players()
+                        await broadcast_event("royals_transfer", {
+                            "from": src, "to": dst, "amount": amount
+                        })
+
             # --- ВЫДАЧА ПРЕДМЕТА ИГРОКУ ---
             elif msg_type == "update_player_data":
                 target = data.get("target")
@@ -290,18 +341,17 @@ async def handler(websocket):
                     if isinstance(bucket, list):
                         for i in range(len(bucket)):
                             if str(bucket[i].get("id")) == str(new_item.get("id")):
-                                # Сохраняем id, заменяем остальное
                                 merged = dict(new_item)
                                 merged["id"] = bucket[i].get("id")
                                 if data_type == "inventory":
                                     merged["category"] = safe_category(merged.get("category", "other"))
-                                    merged["count"] = max(1, int(merged.get("count", 1) or 1))
+                                    merged["count"] = max(1, safe_int(merged.get("count", 1), 1))
                                 bucket[i] = merged
                                 break
                         await broadcast_players()
 
             # ================================================
-            # ПЕРЕДАЧА
+            # ПЕРЕДАЧА ПРЕДМЕТОВ
             # ================================================
             elif msg_type == "transfer_item":
                 src = data.get("from")
@@ -327,14 +377,13 @@ async def handler(websocket):
                         })
 
             # ================================================
-            # ШКАФЧИК (базовый инвентарь)
+            # ШКАФЧИК
             # ================================================
             elif msg_type == "base_add":
                 item = data.get("item")
                 if item:
                     add_item_to_bucket(base_inventory, item)
                     await broadcast_social()
-                    await broadcast_event("base_added", {"item": item})
 
             elif msg_type == "base_edit":
                 new_item = data.get("item")
@@ -344,10 +393,7 @@ async def handler(websocket):
                         existing["name"] = new_item.get("name", existing.get("name"))
                         existing["desc"] = new_item.get("desc", existing.get("desc") or "")
                         existing["category"] = safe_category(new_item.get("category", existing.get("category", "other")))
-                        try:
-                            existing["count"] = max(1, int(new_item.get("count", existing.get("count", 1))))
-                        except (TypeError, ValueError):
-                            pass
+                        existing["count"] = max(1, safe_int(new_item.get("count", existing.get("count", 1)), 1))
                         await broadcast_social()
 
             elif msg_type == "base_delete":
@@ -392,8 +438,37 @@ async def handler(websocket):
                             "player": player, "item": snapshot, "count": taken
                         })
 
+            # --- РОЯЛЫ: игрок кладёт/берёт из шкафчика ---
+            elif msg_type == "base_royals_put":
+                player = data.get("player")
+                amount = max(0, safe_int(data.get("amount"), 0))
+                if player and amount > 0:
+                    ensure_player_shape(player)
+                    have = int(players_data[player].get("royals", 0) or 0)
+                    if have >= amount:
+                        players_data[player]["royals"] = have - amount
+                        base_royals += amount
+                        await broadcast_players()
+                        await broadcast_social()
+                        await broadcast_event("base_royals_put", {
+                            "player": player, "amount": amount
+                        })
+
+            elif msg_type == "base_royals_take":
+                player = data.get("player")
+                amount = max(0, safe_int(data.get("amount"), 0))
+                if player and amount > 0 and base_royals >= amount:
+                    ensure_player_shape(player)
+                    base_royals -= amount
+                    players_data[player]["royals"] = int(players_data[player].get("royals", 0) or 0) + amount
+                    await broadcast_players()
+                    await broadcast_social()
+                    await broadcast_event("base_royals_take", {
+                        "player": player, "amount": amount
+                    })
+
             # ================================================
-            # ЗАГОТОВКИ (templates)
+            # ЗАГОТОВКИ
             # ================================================
             elif msg_type == "template_add":
                 item = data.get("item")
@@ -409,10 +484,7 @@ async def handler(websocket):
                         existing["name"] = new_item.get("name", existing.get("name"))
                         existing["desc"] = new_item.get("desc", existing.get("desc") or "")
                         existing["category"] = safe_category(new_item.get("category", existing.get("category", "other")))
-                        try:
-                            existing["count"] = max(1, int(new_item.get("count", existing.get("count", 1))))
-                        except (TypeError, ValueError):
-                            pass
+                        existing["count"] = max(1, safe_int(new_item.get("count", existing.get("count", 1)), 1))
                         await broadcast_social()
 
             elif msg_type == "template_delete":
@@ -437,7 +509,7 @@ async def handler(websocket):
                             "desc": tpl.get("desc", "") or "",
                             "category": safe_category(tpl.get("category", "other")),
                         }
-                        give_count = int(count) if count is not None else int(tpl.get("count", 1) or 1)
+                        give_count = safe_int(count, safe_int(tpl.get("count", 1), 1)) if count is not None else safe_int(tpl.get("count", 1), 1)
                         give_count = max(1, give_count)
                         add_item_to_bucket(
                             players_data[target].setdefault("inventory", []),
@@ -449,54 +521,96 @@ async def handler(websocket):
                         })
 
             # ================================================
-            # ТРЕЙД
+            # ТРЕЙД (с поддержкой роялов)
             # ================================================
             elif msg_type == "trade_propose":
                 src = data.get("from")
                 dst = data.get("to")
+                from_type = data.get("fromType", "item")
+                to_type = data.get("toType", "item")
+                if not src or not dst:
+                    continue
+                ensure_player_shape(src)
+                ensure_player_shape(dst)
+
+                # LEFT SIDE
                 from_item_id = data.get("fromItemId")
+                from_count = max(1, safe_int(data.get("fromCount", 1), 1))
+                from_royals = max(0, safe_int(data.get("fromRoyals", 0), 0))
+
+                # RIGHT SIDE
                 to_item_id = data.get("toItemId")
-                from_count = data.get("fromCount", 1)
-                to_count = data.get("toCount", 1)
-                if src and dst and from_item_id and to_item_id:
-                    ensure_player_shape(src)
-                    ensure_player_shape(dst)
+                to_count = max(1, safe_int(data.get("toCount", 1), 1))
+                to_royals = max(0, safe_int(data.get("toRoyals", 0), 0))
+
+                # validate
+                f_ok, f_snap = False, None
+                if from_type == "royals":
+                    if int(players_data[src].get("royals", 0) or 0) >= from_royals and from_royals > 0:
+                        f_ok = True
+                        f_snap = {"type": "royals", "amount": from_royals}
+                else:
                     f_item = find_item(players_data[src].get("inventory", []), from_item_id)
-                    t_item = find_item(players_data[dst].get("inventory", []), to_item_id)
-                    if f_item and t_item:
+                    if f_item:
                         f_avail = int(f_item.get("count", 1) or 1)
-                        t_avail = int(t_item.get("count", 1) or 1)
-                        try:
-                            fc = max(1, min(int(from_count), f_avail))
-                            tc = max(1, min(int(to_count), t_avail))
-                        except (TypeError, ValueError):
-                            fc, tc = 1, 1
-                        trade = {
-                            "id": new_id(),
-                            "from": src, "to": dst,
-                            "fromItemId": from_item_id,
-                            "fromCount": fc,
-                            "fromItem": {
+                        from_count = min(from_count, f_avail)
+                        f_ok = True
+                        f_snap = {
+                            "type": "item",
+                            "itemId": from_item_id,
+                            "count": from_count,
+                            "item": {
                                 "name": f_item.get("name", ""),
                                 "desc": f_item.get("desc", "") or "",
                                 "category": safe_category(f_item.get("category", "other"))
-                            },
-                            "toItemId": to_item_id,
-                            "toCount": tc,
-                            "toItem": {
+                            }
+                        }
+
+                t_ok, t_snap = False, None
+                if to_type == "royals":
+                    if int(players_data[dst].get("royals", 0) or 0) >= to_royals and to_royals > 0:
+                        t_ok = True
+                        t_snap = {"type": "royals", "amount": to_royals}
+                else:
+                    t_item = find_item(players_data[dst].get("inventory", []), to_item_id)
+                    if t_item:
+                        t_avail = int(t_item.get("count", 1) or 1)
+                        to_count = min(to_count, t_avail)
+                        t_ok = True
+                        t_snap = {
+                            "type": "item",
+                            "itemId": to_item_id,
+                            "count": to_count,
+                            "item": {
                                 "name": t_item.get("name", ""),
                                 "desc": t_item.get("desc", "") or "",
                                 "category": safe_category(t_item.get("category", "other"))
-                            },
-                            "fromConfirmed": True,
-                            "toConfirmed": False,
-                            "createdAt": time.time()
+                            }
                         }
-                        pending_trades.append(trade)
-                        await broadcast_social()
-                        await broadcast_event("trade_proposed", trade)
-                    else:
-                        await broadcast_event("trade_failed", {"reason": "missing_item"})
+
+                if f_ok and t_ok:
+                    trade = {
+                        "id": new_id(),
+                        "from": src, "to": dst,
+                        "fromType": from_type,
+                        "fromRoyals": from_royals if from_type == "royals" else 0,
+                        "fromItemId": from_item_id if from_type == "item" else None,
+                        "fromCount": from_count if from_type == "item" else 0,
+                        "fromItem": (f_snap.get("item") if f_snap and from_type == "item" else None),
+                        "toType": to_type,
+                        "toRoyals": to_royals if to_type == "royals" else 0,
+                        "toItemId": to_item_id if to_type == "item" else None,
+                        "toCount": to_count if to_type == "item" else 0,
+                        "toItem": (t_snap.get("item") if t_snap and to_type == "item" else None),
+                        "fromConfirmed": True,
+                        "toConfirmed": False,
+                        "createdAt": time.time()
+                    }
+                    pending_trades.append(trade)
+                    await broadcast_social()
+                    await broadcast_event("trade_proposed", trade)
+                else:
+                    await broadcast_event("trade_failed", {"reason": "missing_item"})
 
             elif msg_type == "trade_confirm":
                 trade_id = data.get("tradeId")
@@ -511,31 +625,87 @@ async def handler(websocket):
                     if trade["fromConfirmed"] and trade["toConfirmed"]:
                         src = trade["from"]
                         dst = trade["to"]
-                        f_res = take_from_stack(
-                            players_data[src].get("inventory", []),
-                            trade["fromItemId"], trade["fromCount"]
-                        )
-                        t_res = take_from_stack(
-                            players_data[dst].get("inventory", []),
-                            trade["toItemId"], trade["toCount"]
-                        )
-                        if f_res and t_res:
-                            f_snap, f_taken = f_res
-                            t_snap, t_taken = t_res
-                            add_item_to_bucket(players_data[dst].setdefault("inventory", []), f_snap, f_taken)
-                            add_item_to_bucket(players_data[src].setdefault("inventory", []), t_snap, t_taken)
+
+                        # validate both sides
+                        ok = True
+                        f_side = None
+                        t_side = None
+
+                        # LEFT
+                        if trade["fromType"] == "royals":
+                            have = int(players_data[src].get("royals", 0) or 0)
+                            if have < trade["fromRoyals"]:
+                                ok = False
+                            else:
+                                f_side = {"type": "royals", "amount": trade["fromRoyals"]}
+                        else:
+                            f_item = take_from_stack(
+                                players_data[src].get("inventory", []),
+                                trade["fromItemId"], trade["fromCount"]
+                            )
+                            if not f_item:
+                                ok = False
+                            else:
+                                f_snap, f_taken = f_item
+                                f_side = {"type": "item", "item": f_snap, "count": f_taken}
+
+                        # RIGHT
+                        if ok:
+                            if trade["toType"] == "royals":
+                                have = int(players_data[dst].get("royals", 0) or 0)
+                                if have < trade["toRoyals"]:
+                                    ok = False
+                                else:
+                                    t_side = {"type": "royals", "amount": trade["toRoyals"]}
+                            else:
+                                t_item = take_from_stack(
+                                    players_data[dst].get("inventory", []),
+                                    trade["toItemId"], trade["toCount"]
+                                )
+                                if not t_item:
+                                    ok = False
+                                else:
+                                    t_snap, t_taken = t_item
+                                    t_side = {"type": "item", "item": t_snap, "count": t_taken}
+
+                        # rollback if failed on right after taking from left
+                        if not ok:
+                            # try to restore left
+                            if f_side and f_side["type"] == "item":
+                                add_item_to_bucket(
+                                    players_data[src].setdefault("inventory", []),
+                                    f_side["item"], f_side["count"]
+                                )
+                            pending_trades.remove(trade)
+                            await broadcast_players()
+                            await broadcast_social()
+                            await broadcast_event("trade_failed", {"tradeId": trade_id})
+                        else:
+                            # give left -> dst
+                            if f_side["type"] == "royals":
+                                players_data[src]["royals"] = int(players_data[src].get("royals", 0) or 0) - f_side["amount"]
+                                players_data[dst]["royals"] = int(players_data[dst].get("royals", 0) or 0) + f_side["amount"]
+                            else:
+                                add_item_to_bucket(
+                                    players_data[dst].setdefault("inventory", []),
+                                    f_side["item"], f_side["count"]
+                                )
+                            # give right -> src
+                            if t_side["type"] == "royals":
+                                players_data[dst]["royals"] = int(players_data[dst].get("royals", 0) or 0) - t_side["amount"]
+                                players_data[src]["royals"] = int(players_data[src].get("royals", 0) or 0) + t_side["amount"]
+                            else:
+                                add_item_to_bucket(
+                                    players_data[src].setdefault("inventory", []),
+                                    t_side["item"], t_side["count"]
+                                )
                             pending_trades.remove(trade)
                             await broadcast_players()
                             await broadcast_social()
                             await broadcast_event("trade_completed", {
                                 "from": src, "to": dst,
-                                "fromItem": f_snap, "fromCount": f_taken,
-                                "toItem": t_snap, "toCount": t_taken
+                                "fromSide": f_side, "toSide": t_side
                             })
-                        else:
-                            pending_trades.remove(trade)
-                            await broadcast_social()
-                            await broadcast_event("trade_failed", {"tradeId": trade_id, "reason": "missing_item"})
                     else:
                         await broadcast_social()
 
