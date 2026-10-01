@@ -7,17 +7,10 @@ import uuid
 import traceback
 import upstash_redis.asyncio as redis_async
 
-# ================================================================
-#                   REDIS (UPSTASH REST API)
-# ================================================================
 UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-
 r = None
 
-# ================================================================
-#                       СОСТОЯНИЕ
-# ================================================================
 clock_state = {
     "isRunning": False,
     "baseTime": 1704067200,
@@ -53,34 +46,21 @@ def get_default_body():
         "rightLeg": {"hp": 15, "maxHp": 15, "def": 0, "name": "Правая нога"}
     }
 
-
 def get_default_politics():
     return {k: 0 for k in POLITICS_KEYS}
-
 
 def get_default_skills():
     return {
         "totalLevel": 0,
-        "characteristics": {
-            "physiology": 1,
-            "psyche": 1,
-            "intellect": 1,
-            "motorica": 1
-        },
+        "characteristics": {k: 1 for k in CHARACTERISTIC_KEYS},
         "abilities": {}
     }
 
-
 def get_default_player():
     return {
-        "anxiety": [],
-        "inventory": [],
-        "body": get_default_body(),
-        "morale": 10,
-        "anxietyLevel": 0.0,
-        "royals": 0,
-        "politics": get_default_politics(),
-        "skills": get_default_skills()
+        "anxiety": [], "inventory": [], "body": get_default_body(),
+        "morale": 10, "anxietyLevel": 0.0, "royals": 0,
+        "politics": get_default_politics(), "skills": get_default_skills()
     }
 
 
@@ -98,18 +78,18 @@ def get_default_templates():
         {"name": "Психотропик «Психнет»", "desc": "Временно (д4+4 часов) блокирует проявления психической болезни, -2 к результату на все проверки, -3 на социальные проверки и попадание. После действия расстройство усиливается в 2 раза на 2 часа (кроме амнезии).", "category": "consumables", "count": 1},
         {"name": "Психотропик «Психнет+» (наркотик)", "desc": "Временно (д8+4 часов) блокирует проявления психической болезни, +2 к результату на все проверки, -3 на социальные проверки и попадание. Нельзя принимать больше 4 раз в день. При употреблении после 4 приёмов может убрать Психическое заболевание навсегда (д20, удача 20).", "category": "consumables", "count": 1},
         {"name": "Препарат «Ренинганг»", "desc": "Убирает Передозировку, однако уменьшает Боевой дух до 3.", "category": "consumables", "count": 1},
-        {"name": "Пиво «БиерБрудер» (наркотик)", "desc": "Слабый алкогольный напиток. Может вызвать зависимость при 15+ за день. +1 к Боевому духу, -1 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Вино «Виолет» (наркотик)", "desc": "Средний алкогольный напиток. Может вызвать зависимость при 10+ за день. +2 к Боевому духу, -2 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Шнампс «Летзтер» (наркотик)", "desc": "Сильный алкогольный напиток. Может вызвать зависимость при 5+ за день. +5 к Боевому духу, -3 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Сигарета «Рауч» (наркотик)", "desc": "Слабый никотиновый продукт. Зависимость при 10+ за день. -0.5 к Тревоге, +1 к следующему броску на концентрацию или попадание, -1 к следующему социальному броску. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Сигара «Дикер» (наркотик)", "desc": "Средний никотиновый продукт. Зависимость при 5+ за день. -1 к Тревоге, +2 к следующему броску на концентрацию или попадание, -2 к следующему социальному броску. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Никотиновая инъекция (наркотик)", "desc": "Сильный никотиновый продукт. Зависимость при 2+ за день. -4 к Тревоге, +4 к следующему броску на концентрацию или попадание, -4 к следующему социальному броску. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
-        {"name": "Дрог (наркотик)", "desc": "Самый распространённый наркотик в Эрде. +5 к попаданию, концентрации, физиологии, -3 к социальным. Эйфория (обнуляет тревогу, максимум боевого духа). Зависимость при 2+ в день. Действует 2 часа (4 хода), после чего «отходняк»: -2 ко всем проверкам. Эффекты не суммируются.", "category": "consumables", "count": 1},
-        {"name": "Героин (наркотик)", "desc": "Сильный опиоид. Зависимость при 2+ в день. Нивелирует дебаффы от всех Травм, -5 к самоконтролю и социальному взаимодействию. Эйфория (обнуляет тревогу, максимум боевого духа), сонливость. Действует 2 часа (4 хода), после чего -2 ко всем характеристикам. Эффекты не суммируются.", "category": "consumables", "count": 1},
-        {"name": "Гетран", "desc": "Кофейный напиток. +2 к моторике. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
-        {"name": "Препарат «Гехирм»", "desc": "Синие таблетки, не вызывают привыкания. +2 к психике. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
-        {"name": "Куриная ножка в соусе Стрипп", "desc": "+2 к физиологии. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
-        {"name": "Тёмный шоколад «Шок»", "desc": "+2 к интеллекту. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
+        {"name": "Пиво «БиерБрудер» (наркотик)", "desc": "Слабый алкогольный напиток. +1 к Боевому духу, -1 к попаданию, стойкости и самообладанию. 2 часа. Эффекты суммируются.", "category": "consumables", "count": 1},
+        {"name": "Вино «Виолет» (наркотик)", "desc": "Средний алкогольный напиток. +2 к Боевому духу, -2 к попаданию, стойкости и самообладанию. 2 часа. Эффекты суммируются.", "category": "consumables", "count": 1},
+        {"name": "Шнампс «Летзтер» (наркотик)", "desc": "Сильный алкогольный напиток. +5 к Боевому духу, -3 к попаданию, стойкости и самообладанию. 2 часа. Эффекты суммируются.", "category": "consumables", "count": 1},
+        {"name": "Сигарета «Рауч» (наркотик)", "desc": "Слабый никотиновый продукт. -0.5 к Тревоге, +1 к следующему броску на концентрацию или попадание, -1 к следующему социальному броску. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Сигара «Дикер» (наркотик)", "desc": "Средний никотиновый продукт. -1 к Тревоге, +2 к следующему броску на концентрацию или попадание, -2 к следующему социальному броску. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Никотиновая инъекция (наркотик)", "desc": "Сильный никотиновый продукт. -4 к Тревоге, +4 к следующему броску на концентрацию или попадание, -4 к следующему социальному броску. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Дрог (наркотик)", "desc": "+5 к попаданию, концентрации, физиологии, -3 к социальным. Эйфория. 2 часа, после чего «отходняк»: -2 ко всем проверкам.", "category": "consumables", "count": 1},
+        {"name": "Героин (наркотик)", "desc": "Нивелирует дебаффы от всех Травм, -5 к самоконтролю и социальному взаимодействию. Эйфория, сонливость. 2 часа, после чего -2 ко всем характеристикам.", "category": "consumables", "count": 1},
+        {"name": "Гетран", "desc": "Кофейный напиток. +2 к моторике. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Препарат «Гехирм»", "desc": "Синие таблетки. +2 к психике. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Куриная ножка в соусе Стрипп", "desc": "+2 к физиологии. 2 часа.", "category": "consumables", "count": 1},
+        {"name": "Тёмный шоколад «Шок»", "desc": "+2 к интеллекту. 2 часа.", "category": "consumables", "count": 1},
         {"name": "Морское пальто", "desc": "Туловище. +1 к физиологии.", "category": "clothing", "count": 1},
         {"name": "Пиджак «Диско»", "desc": "Туловище. +1 к интеллекту.", "category": "clothing", "count": 1},
         {"name": "Спортивная куртка", "desc": "Туловище. +1 к моторике.", "category": "clothing", "count": 1},
@@ -133,29 +113,29 @@ def get_default_templates():
         {"name": "Длинные кожаные военные ботинки", "desc": "Ступни. +1 к физиологии.", "category": "clothing", "count": 1},
         {"name": "Чёрные туфли с упряжкой", "desc": "Ступни. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1},
         {"name": "Красные башмаки гангстера", "desc": "Ступни. +2 к физиологии, -1 к психике.", "category": "clothing", "count": 1},
-        {"name": "Защитный костюм Граухайт М1", "desc": "Покрывает всё тело. Нивелирует грязь и влияние Серости до 8 часов. При получении урона сразу разрушается на этой части тела, убирая бонусы. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1},
+        {"name": "Защитный костюм Граухайт М1", "desc": "Покрывает всё тело. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1},
         {"name": "Открытое платье", "desc": "+2 к психике, +1 к интеллекту, -3 к моторике.", "category": "clothing", "count": 1},
-        {"name": "Медицинский халат", "desc": "Уменьшает степень кровотечения и ожога на 1. +3 к психике, +1 к интеллекту, -3 к моторике, -1 к физиологии.", "category": "clothing", "count": 1},
-        {"name": "ПОЗБ (пистолет)", "desc": "Попадание 8, эффективная дальность 3, макс 6, урон д8. Один выстрел за ход, можно два пистолета. Каждый выстрел +0.1 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
-        {"name": "Барабанный пистолет", "desc": "Попадание 10, эффективная дальность 4, макс 6, урон д10. 5 доп. выстрелов за ход, каждый новый -2 к попаданию. Каждый выстрел +0.1 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
-        {"name": "Винтовка Бернара БУ", "desc": "Попадание 10, эффективная дальность 4, макс 8, урон д12. Два выстрела за ход. Каждый выстрел +0.2 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
-        {"name": "Самопальный пистоль", "desc": "Попадание 13, эффективная дальность 2, макс 4, урон д6. До 2 выстрелов за ход. Каждый выстрел +0.1 Тревоги, при попадании +0.2.", "category": "weapon", "count": 1},
-        {"name": "Винтовка Стард М1", "desc": "Попадание 10, эффективная дальность 2, макс 4, урон д4. До 4 выстрелов за ход. При попадании в ноги — запрет передвижения в следующем ходу. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-        {"name": "Кремневая винтовка Дугина", "desc": "Попадание 12, эффективная дальность 5, макс 10, урон д10. 1 выстрел, накладывает ослепление 1 на использующего. Каждый выстрел +0.1 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-        {"name": "Винтовка Бернара Б", "desc": "Попадание 10, эффективная дальность 6, макс 12, урон д14. Два выстрела за ход. Каждый выстрел +0.2 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
-        {"name": "Фастплаттер Модель 10", "desc": "Попадание 13, эффективная дальность 2, макс 4, урон д12, стреляет по конусу, -2 урона за каждую клетку между вами. Один выстрел за ход. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-        {"name": "Фастплаттер х89", "desc": "Попадание 14, эффективная дальность 1, макс 2, урон 5д4, стреляет по конусу. Один выстрел за ход. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-        {"name": "Гевехр", "desc": "Попадание 15, эффективная дальность 5, макс 10, урон д6. Очереди из 8 пуль, одиночные или непрерывный огонь (успех 18 если основное оружие, скорость вдвое меньше, нужен ход на установку). Каждый выстрел +0.1 Тревоги, при попадании +0.2.", "category": "weapon", "count": 1},
-        {"name": "Самопальная винтовка", "desc": "Попадание 15, эффективная дальность 4, макс 8. До 2 выстрелов за ход. Каждый выстрел +0.2 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-        {"name": "Армейский нож", "desc": "Попадание 8, урон д6. До 3 ударов за ход. Каждое попадание +0.5 Тревоги.", "category": "weapon", "count": 1},
-        {"name": "Лом (оружие)", "desc": "Попадание 5, урон д6. Один удар, не увеличивает Тревогу.", "category": "weapon", "count": 1},
-        {"name": "Полицейская дубинка", "desc": "Попадание 8, урон 0. До 2 ударов за ход. Каждое попадание -1 к Боевому духу.", "category": "weapon", "count": 1},
-        {"name": "Лом (инструмент)", "desc": "+3 к результату броска на взлом или другие физические воздействия на предметы.", "category": "other", "count": 1},
-        {"name": "Кусачки", "desc": "+3 к результату броска на технику, починку и т.д.", "category": "other", "count": 1},
-        {"name": "Фонарик", "desc": "Позволяет видеть определённую область в темноте, нивелируя помеху.", "category": "other", "count": 1},
-        {"name": "Бинокль", "desc": "Увеличивает эффективную дальность на 2 клетки, максимальную на 4. Пригодится для наведения.", "category": "other", "count": 1},
-        {"name": "Пила", "desc": "+3 к результату броска при взаимодействии с деревянными предметами, их починке и разбору.", "category": "other", "count": 1},
-        {"name": "Электрогазосварка", "desc": "+3 к результату броска при взаимодействии с металлическими предметами, их починке и разбору. Можно что-то заварить или разварить.", "category": "other", "count": 1},
+        {"name": "Медицинский халат", "desc": "+3 к психике, +1 к интеллекту, -3 к моторике, -1 к физиологии.", "category": "clothing", "count": 1},
+        {"name": "ПОЗБ (пистолет)", "desc": "Попадание 8, дальность 3/6, урон д8.", "category": "weapon", "count": 1},
+        {"name": "Барабанный пистолет", "desc": "Попадание 10, дальность 4/6, урон д10.", "category": "weapon", "count": 1},
+        {"name": "Винтовка Бернара БУ", "desc": "Попадание 10, дальность 4/8, урон д12.", "category": "weapon", "count": 1},
+        {"name": "Самопальный пистоль", "desc": "Попадание 13, дальность 2/4, урон д6.", "category": "weapon", "count": 1},
+        {"name": "Винтовка Стард М1", "desc": "Попадание 10, дальность 2/4, урон д4.", "category": "weapon", "count": 1},
+        {"name": "Кремневая винтовка Дугина", "desc": "Попадание 12, дальность 5/10, урон д10.", "category": "weapon", "count": 1},
+        {"name": "Винтовка Бернара Б", "desc": "Попадание 10, дальность 6/12, урон д14.", "category": "weapon", "count": 1},
+        {"name": "Фастплаттер Модель 10", "desc": "Попадание 13, дальность 2/4, урон д12, конус.", "category": "weapon", "count": 1},
+        {"name": "Фастплаттер х89", "desc": "Попадание 14, дальность 1/2, урон 5д4, конус.", "category": "weapon", "count": 1},
+        {"name": "Гевехр", "desc": "Попадание 15, дальность 5/10, урон д6.", "category": "weapon", "count": 1},
+        {"name": "Самопальная винтовка", "desc": "Попадание 15, дальность 4/8.", "category": "weapon", "count": 1},
+        {"name": "Армейский нож", "desc": "Попадание 8, урон д6.", "category": "weapon", "count": 1},
+        {"name": "Лом (оружие)", "desc": "Попадание 5, урон д6.", "category": "weapon", "count": 1},
+        {"name": "Полицейская дубинка", "desc": "Попадание 8, урон 0.", "category": "weapon", "count": 1},
+        {"name": "Лом (инструмент)", "desc": "+3 к взлому.", "category": "other", "count": 1},
+        {"name": "Кусачки", "desc": "+3 к технике.", "category": "other", "count": 1},
+        {"name": "Фонарик", "desc": "Видеть в темноте.", "category": "other", "count": 1},
+        {"name": "Бинокль", "desc": "+2 эффективной, +4 макс дальности.", "category": "other", "count": 1},
+        {"name": "Пила", "desc": "+3 к дереву.", "category": "other", "count": 1},
+        {"name": "Электрогазосварка", "desc": "+3 к металлу.", "category": "other", "count": 1},
     ]
 
 
@@ -175,7 +155,6 @@ def ensure_player_shape(name):
     else:
         for k in POLITICS_KEYS:
             if k not in p["politics"]: p["politics"][k] = 0
-    # --- skills ---
     if "skills" not in p or not isinstance(p["skills"], dict):
         p["skills"] = get_default_skills()
     else:
@@ -192,7 +171,6 @@ def ensure_player_shape(name):
 
 
 def parse_ability_id(ability_id):
-    """Разбирает id вида 'physiology.1.2' -> dict. Возвращает None при ошибке."""
     if not isinstance(ability_id, str):
         return None
     parts = ability_id.split(".")
@@ -202,8 +180,7 @@ def parse_ability_id(ability_id):
     if char not in CHARACTERISTIC_KEYS:
         return None
     try:
-        tier = int(parts[1])
-        num = int(parts[2])
+        tier = int(parts[1]); num = int(parts[2])
     except ValueError:
         return None
     if tier < 1 or tier > 5 or num < 1 or num > 3:
@@ -212,13 +189,9 @@ def parse_ability_id(ability_id):
 
 
 def skills_spent(skills):
+    """Очки тратятся только на способности, не на характеристики."""
     spent = 0
-    chars = skills.get("characteristics", {})
-    for c in CHARACTERISTIC_KEYS:
-        lvl = int(chars.get(c, 1) or 1)
-        spent += max(0, lvl - 1)
-    abilities = skills.get("abilities", {})
-    for aid, lvl in abilities.items():
+    for aid, lvl in skills.get("abilities", {}).items():
         try:
             spent += max(0, int(lvl))
         except (TypeError, ValueError):
@@ -231,12 +204,21 @@ def skills_available(skills):
     return max(0, total - skills_spent(skills))
 
 
+def has_investment_in_tier(skills, char, tier):
+    for aid, lvl in skills.get("abilities", {}).items():
+        if int(lvl or 0) <= 0:
+            continue
+        p = parse_ability_id(aid)
+        if p and p["char"] == char and p["tier"] == tier:
+            return True
+    return False
+
+
 # ================================================================
-#                    СОХРАНЕНИЕ / ЗАГРУЗКА (REST)
+#                    СОХРАНЕНИЕ / ЗАГРУЗКА
 # ================================================================
 async def save_state():
-    if not r:
-        return
+    if not r: return
     async with save_lock:
         try:
             await r.set("dnd:clock_state", json.dumps(clock_state))
@@ -251,9 +233,7 @@ async def save_state():
 
 async def load_state():
     global base_royals
-    if not r:
-        print("[load_state] REDIS не подключён", flush=True)
-        return
+    if not r: return
     try:
         d = await r.get("dnd:clock_state")
         if d: clock_state.update(json.loads(d))
@@ -276,11 +256,8 @@ async def load_state():
         d = await r.get("dnd:item_templates")
         loaded_templates = []
         if d:
-            try:
-                loaded_templates = json.loads(d)
-            except Exception:
-                loaded_templates = []
-
+            try: loaded_templates = json.loads(d)
+            except Exception: loaded_templates = []
         item_templates.clear()
         if loaded_templates:
             item_templates.extend(loaded_templates)
@@ -289,14 +266,12 @@ async def load_state():
             if not flag:
                 item_templates.extend(get_default_templates())
                 await r.set("dnd:templates_initialized", "1")
-                print(f"[load_state] Инициализированы дефолтные заготовки: {len(item_templates)}", flush=True)
 
-        templates_changed = False
+        changed = False
         for tpl in item_templates:
             if not tpl.get("id"):
-                tpl["id"] = new_id()
-                templates_changed = True
-        if templates_changed:
+                tpl["id"] = new_id(); changed = True
+        if changed:
             await r.set("dnd:item_templates", json.dumps(item_templates, ensure_ascii=False))
 
         d = await r.get("dnd:pending_trades")
@@ -304,8 +279,7 @@ async def load_state():
             pending_trades.clear()
             pending_trades.extend(json.loads(d))
 
-        print(f"[load_state] Загружено: {len(players_data)} игроков, "
-              f"{len(base_inventory)} предметов, {len(item_templates)} заготовок", flush=True)
+        print(f"[load_state] Загружено: {len(players_data)} игроков", flush=True)
     except Exception as e:
         print(f"[load_state] Ошибка: {e}", flush=True)
         traceback.print_exc()
@@ -317,9 +291,6 @@ async def autosave_loop():
         await save_state()
 
 
-# ================================================================
-#                       ХЕЛПЕРЫ
-# ================================================================
 def new_id(): return uuid.uuid4().hex[:12]
 
 def safe_int(v, default=0):
@@ -361,9 +332,6 @@ def take_from_stack(lst, item_id, count):
     return snapshot, take
 
 
-# ================================================================
-#                       BROADCAST
-# ================================================================
 async def broadcast_players():
     if clients:
         websockets.broadcast(clients, json.dumps({"type": "sync_players", "playersData": players_data}))
@@ -383,9 +351,6 @@ async def broadcast_event(kind, data):
         websockets.broadcast(clients, json.dumps({"type": "event", "kind": kind, "data": data}))
 
 
-# ================================================================
-#                       ОБРАБОТЧИК WS
-# ================================================================
 async def handler(websocket):
     global base_royals
     clients.add(websocket)
@@ -394,17 +359,13 @@ async def handler(websocket):
         await websocket.send(json.dumps({"type": "sync_players", "playersData": players_data}))
         await websocket.send(json.dumps({
             "type": "sync_social",
-            "baseInventory": base_inventory,
-            "baseRoyals": base_royals,
-            "itemTemplates": item_templates,
-            "pendingTrades": pending_trades
+            "baseInventory": base_inventory, "baseRoyals": base_royals,
+            "itemTemplates": item_templates, "pendingTrades": pending_trades
         }))
 
         async for message in websocket:
-            try:
-                data = json.loads(message)
-            except json.JSONDecodeError:
-                continue
+            try: data = json.loads(message)
+            except json.JSONDecodeError: continue
 
             msg_type = data.get("type")
 
@@ -425,7 +386,8 @@ async def handler(websocket):
                         ensure_player_shape(name)
 
             elif msg_type == "update_body":
-                target, part_id, new_hp, new_def, new_max = data.get("target"), data.get("part"), data.get("hp"), data.get("def", 0), data.get("maxHp")
+                target, part_id, new_hp = data.get("target"), data.get("part"), data.get("hp")
+                new_def, new_max = data.get("def", 0), data.get("maxHp")
                 if target:
                     ensure_player_shape(target)
                     p = players_data[target]
@@ -489,7 +451,7 @@ async def handler(websocket):
                     await broadcast_players()
 
             # ================================================
-            # РАЗВИТИЕ ПЕРСОНАЖА
+            # РАЗВИТИЕ
             # ================================================
             elif msg_type == "skills_set_level":
                 target = data.get("target")
@@ -514,12 +476,11 @@ async def handler(websocket):
                 if player and char in CHARACTERISTIC_KEYS:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
-                    if skills_available(sk) > 0:
-                        cur = int(sk["characteristics"].get(char, 1) or 1)
-                        if cur < 5:
-                            sk["characteristics"][char] = cur + 1
-                            await broadcast_players()
-                            await save_state()
+                    cur = int(sk["characteristics"].get(char, 1) or 1)
+                    if cur < 5:
+                        sk["characteristics"][char] = cur + 1
+                        await broadcast_players()
+                        await save_state()
 
             elif msg_type == "skills_decrease_characteristic":
                 player = data.get("player")
@@ -530,7 +491,6 @@ async def handler(websocket):
                     cur = int(sk["characteristics"].get(char, 1) or 1)
                     if cur > 1:
                         new_level = cur - 1
-                        # Запрещаем, если есть способности выше нового яруса
                         has_higher = False
                         for aid, lvl in sk.get("abilities", {}).items():
                             if int(lvl or 0) > 0:
@@ -550,14 +510,29 @@ async def handler(websocket):
                 if player and parsed:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
-                    char_level = int(sk["characteristics"].get(parsed["char"], 1) or 1)
-                    if char_level >= parsed["tier"]:
-                        if skills_available(sk) > 0:
-                            cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
-                            if cur < 3:
-                                sk.setdefault("abilities", {})[aid] = cur + 1
-                                await broadcast_players()
-                                await save_state()
+                    char = parsed["char"]
+                    tier = parsed["tier"]
+                    char_level = int(sk["characteristics"].get(char, 1) or 1)
+
+                    # Разрешение: либо ручной уровень достаточен,
+                    # либо есть вложение в предыдущий ярус
+                    tier_unlocked = False
+                    if tier == 1:
+                        tier_unlocked = True
+                    elif char_level >= tier:
+                        tier_unlocked = True
+                    elif has_investment_in_tier(sk, char, tier - 1):
+                        tier_unlocked = True
+
+                    if tier_unlocked and skills_available(sk) > 0:
+                        cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
+                        if cur < 3:
+                            sk.setdefault("abilities", {})[aid] = cur + 1
+                            # Автоподъём характеристики до тира
+                            if char_level < tier:
+                                sk["characteristics"][char] = tier
+                            await broadcast_players()
+                            await save_state()
 
             elif msg_type == "skills_remove_ability":
                 player = data.get("player")
@@ -574,6 +549,9 @@ async def handler(websocket):
                         await broadcast_players()
                         await save_state()
 
+            # ================================================
+            # ПРЕДМЕТЫ
+            # ================================================
             elif msg_type == "update_player_data":
                 target, data_type, item = data.get("target"), data.get("dataType"), data.get("item")
                 if target and data_type and item:
@@ -607,7 +585,8 @@ async def handler(websocket):
                         await broadcast_players()
 
             elif msg_type == "transfer_item":
-                src, dst, data_type, item_id, count = data.get("from"), data.get("to"), data.get("dataType", "inventory"), data.get("itemId"), data.get("count", 1)
+                src, dst, data_type = data.get("from"), data.get("to"), data.get("dataType", "inventory")
+                item_id, count = data.get("itemId"), data.get("count", 1)
                 if src and dst and item_id:
                     ensure_player_shape(src); ensure_player_shape(dst)
                     bucket = players_data[src].get(data_type, [])
@@ -726,7 +705,8 @@ async def handler(websocket):
                         await broadcast_event("template_give", {"target": target, "item": snapshot, "count": give_count})
 
             elif msg_type == "trade_propose":
-                src, dst, from_type, to_type = data.get("from"), data.get("to"), data.get("fromType", "item"), data.get("toType", "item")
+                src, dst = data.get("from"), data.get("to")
+                from_type, to_type = data.get("fromType", "item"), data.get("toType", "item")
                 if not src or not dst: continue
                 ensure_player_shape(src); ensure_player_shape(dst)
                 from_item_id, from_count, from_royals = data.get("fromItemId"), max(1, safe_int(data.get("fromCount", 1), 1)), max(0, safe_int(data.get("fromRoyals", 0), 0))
@@ -835,43 +815,24 @@ async def handler(websocket):
         clients.discard(websocket)
 
 
-# ================================================================
-#                       ЗАПУСК
-# ================================================================
 async def main():
     global r
     port = int(os.environ.get("PORT", 8765))
-
-    print("[main] ========== STARTUP (REST API) ==========", flush=True)
-    print(f"[main] PORT={port}", flush=True)
-    print(f"[main] UPSTASH_REDIS_REST_URL is set: {bool(UPSTASH_REDIS_REST_URL)}", flush=True)
-    print(f"[main] UPSTASH_REDIS_REST_TOKEN is set: {bool(UPSTASH_REDIS_REST_TOKEN)}", flush=True)
+    print(f"[main] STARTUP, PORT={port}", flush=True)
 
     if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
         try:
-            print("[main] Подключаемся к Upstash через REST API...", flush=True)
             r = redis_async.Redis(url=UPSTASH_REDIS_REST_URL, token=UPSTASH_REDIS_REST_TOKEN)
-
-            test_val = f"startup_ok_{int(time.time())}"
-            await r.set("dnd:startup_test", test_val)
-            readback = await r.get("dnd:startup_test")
-            print(f"[main] Тестовая запись в Redis: {readback}", flush=True)
-
+            await r.set("dnd:startup_test", str(int(time.time())))
             await load_state()
             print("[main] load_state() завершён", flush=True)
-
         except Exception as e:
-            print(f"[main] ОШИБКА Redis REST: {e}", flush=True)
+            print(f"[main] ОШИБКА Redis: {e}", flush=True)
             traceback.print_exc()
             r = None
-    else:
-        print("[main] Переменные UPSTASH_REDIS_REST_URL/TOKEN не заданы!", flush=True)
 
     asyncio.create_task(autosave_loop())
-    print("[main] autosave_loop запущен", flush=True)
-
     async with websockets.serve(handler, "0.0.0.0", port):
-        print(f"[main] Server started on port {port}", flush=True)
         await asyncio.Future()
 
 
