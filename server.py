@@ -20,12 +20,13 @@ r = None
 # ================================================================
 clock_state = {
     "isRunning": False,
-    "baseTime": 1704067200,   # 01 Эроберий 02 после овс, 00:00
+    "baseTime": 1704067200,
     "lastUpdateTimestamp": time.time()
 }
 
 CATEGORIES = ("clothing", "weapon", "consumables", "artifact", "other")
 POLITICS_KEYS = ("comintern", "moralintern", "neutral", "redFeathers", "utopia")
+CHARACTERISTIC_KEYS = ("physiology", "psyche", "intellect", "motorica")
 
 players_data = {}
 clients = set()
@@ -57,6 +58,19 @@ def get_default_politics():
     return {k: 0 for k in POLITICS_KEYS}
 
 
+def get_default_skills():
+    return {
+        "totalLevel": 0,
+        "characteristics": {
+            "physiology": 1,
+            "psyche": 1,
+            "intellect": 1,
+            "motorica": 1
+        },
+        "abilities": {}
+    }
+
+
 def get_default_player():
     return {
         "anxiety": [],
@@ -65,14 +79,13 @@ def get_default_player():
         "morale": 10,
         "anxietyLevel": 0.0,
         "royals": 0,
-        "politics": get_default_politics()
+        "politics": get_default_politics(),
+        "skills": get_default_skills()
     }
 
 
 def get_default_templates():
-    """Дефолтные заготовки для хранилища мастера. ID им присваивается в load_state."""
     return [
-        # ================== МЕДИЦИНСКИЕ ==================
         {"name": "Бинты", "desc": "Уменьшает степень кровотечения на 1, снимает половину накопившегося. Постепенно (каждый час или раз в 5 ходов, 3 ХП) восстанавливает ХП части тела, на которую наложена (максимум 5), после чего нужно поменять, иначе каждый час кидается д20 на инфекцию (с 16 инфекция).", "category": "consumables", "count": 1},
         {"name": "Шина", "desc": "Убирает дебаффы от перелома или вывиха, конечность восстановится через 2/3/5 дней. Вывих всегда нужно вправлять. Заменяет дебафф на -1 к боевому духу каждый час.", "category": "consumables", "count": 1},
         {"name": "Экспериментальный антибиотик", "desc": "При приёме уменьшает степень сепсиса и любой бактериальной инфекции на 1.", "category": "consumables", "count": 1},
@@ -85,8 +98,6 @@ def get_default_templates():
         {"name": "Психотропик «Психнет»", "desc": "Временно (д4+4 часов) блокирует проявления психической болезни, -2 к результату на все проверки, -3 на социальные проверки и попадание. После действия расстройство усиливается в 2 раза на 2 часа (кроме амнезии).", "category": "consumables", "count": 1},
         {"name": "Психотропик «Психнет+» (наркотик)", "desc": "Временно (д8+4 часов) блокирует проявления психической болезни, +2 к результату на все проверки, -3 на социальные проверки и попадание. Нельзя принимать больше 4 раз в день. При употреблении после 4 приёмов может убрать Психическое заболевание навсегда (д20, удача 20).", "category": "consumables", "count": 1},
         {"name": "Препарат «Ренинганг»", "desc": "Убирает Передозировку, однако уменьшает Боевой дух до 3.", "category": "consumables", "count": 1},
-
-        # ================== ИНЫЕ РАСХОДНИКИ ==================
         {"name": "Пиво «БиерБрудер» (наркотик)", "desc": "Слабый алкогольный напиток. Может вызвать зависимость при 15+ за день. +1 к Боевому духу, -1 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
         {"name": "Вино «Виолет» (наркотик)", "desc": "Средний алкогольный напиток. Может вызвать зависимость при 10+ за день. +2 к Боевому духу, -2 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
         {"name": "Шнампс «Летзтер» (наркотик)", "desc": "Сильный алкогольный напиток. Может вызвать зависимость при 5+ за день. +5 к Боевому духу, -3 к попаданию, стойкости и самообладанию. Действует 2 часа (4 хода). Эффекты суммируются.", "category": "consumables", "count": 1},
@@ -99,8 +110,6 @@ def get_default_templates():
         {"name": "Препарат «Гехирм»", "desc": "Синие таблетки, не вызывают привыкания. +2 к психике. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
         {"name": "Куриная ножка в соусе Стрипп", "desc": "+2 к физиологии. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
         {"name": "Тёмный шоколад «Шок»", "desc": "+2 к интеллекту. Действует 2 часа (8 ходов). Эффект не суммируется.", "category": "consumables", "count": 1},
-
-        # ================== ОДЕЖДА ==================
         {"name": "Морское пальто", "desc": "Туловище. +1 к физиологии.", "category": "clothing", "count": 1},
         {"name": "Пиджак «Диско»", "desc": "Туловище. +1 к интеллекту.", "category": "clothing", "count": 1},
         {"name": "Спортивная куртка", "desc": "Туловище. +1 к моторике.", "category": "clothing", "count": 1},
@@ -127,28 +136,20 @@ def get_default_templates():
         {"name": "Защитный костюм Граухайт М1", "desc": "Покрывает всё тело. Нивелирует грязь и влияние Серости до 8 часов. При получении урона сразу разрушается на этой части тела, убирая бонусы. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1},
         {"name": "Открытое платье", "desc": "+2 к психике, +1 к интеллекту, -3 к моторике.", "category": "clothing", "count": 1},
         {"name": "Медицинский халат", "desc": "Уменьшает степень кровотечения и ожога на 1. +3 к психике, +1 к интеллекту, -3 к моторике, -1 к физиологии.", "category": "clothing", "count": 1},
-
-        # ================== ОРУЖИЕ — ЛЁГКОЕ ==================
         {"name": "ПОЗБ (пистолет)", "desc": "Попадание 8, эффективная дальность 3, макс 6, урон д8. Один выстрел за ход, можно два пистолета. Каждый выстрел +0.1 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
         {"name": "Барабанный пистолет", "desc": "Попадание 10, эффективная дальность 4, макс 6, урон д10. 5 доп. выстрелов за ход, каждый новый -2 к попаданию. Каждый выстрел +0.1 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
         {"name": "Винтовка Бернара БУ", "desc": "Попадание 10, эффективная дальность 4, макс 8, урон д12. Два выстрела за ход. Каждый выстрел +0.2 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
         {"name": "Самопальный пистоль", "desc": "Попадание 13, эффективная дальность 2, макс 4, урон д6. До 2 выстрелов за ход. Каждый выстрел +0.1 Тревоги, при попадании +0.2.", "category": "weapon", "count": 1},
         {"name": "Винтовка Стард М1", "desc": "Попадание 10, эффективная дальность 2, макс 4, урон д4. До 4 выстрелов за ход. При попадании в ноги — запрет передвижения в следующем ходу. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-
-        # ================== ОРУЖИЕ — ТЯЖЁЛОЕ ==================
         {"name": "Кремневая винтовка Дугина", "desc": "Попадание 12, эффективная дальность 5, макс 10, урон д10. 1 выстрел, накладывает ослепление 1 на использующего. Каждый выстрел +0.1 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
         {"name": "Винтовка Бернара Б", "desc": "Попадание 10, эффективная дальность 6, макс 12, урон д14. Два выстрела за ход. Каждый выстрел +0.2 Тревоги, при попадании +0.5.", "category": "weapon", "count": 1},
         {"name": "Фастплаттер Модель 10", "desc": "Попадание 13, эффективная дальность 2, макс 4, урон д12, стреляет по конусу, -2 урона за каждую клетку между вами. Один выстрел за ход. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
         {"name": "Фастплаттер х89", "desc": "Попадание 14, эффективная дальность 1, макс 2, урон 5д4, стреляет по конусу. Один выстрел за ход. Каждый выстрел +0.5 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
         {"name": "Гевехр", "desc": "Попадание 15, эффективная дальность 5, макс 10, урон д6. Очереди из 8 пуль, одиночные или непрерывный огонь (успех 18 если основное оружие, скорость вдвое меньше, нужен ход на установку). Каждый выстрел +0.1 Тревоги, при попадании +0.2.", "category": "weapon", "count": 1},
         {"name": "Самопальная винтовка", "desc": "Попадание 15, эффективная дальность 4, макс 8. До 2 выстрелов за ход. Каждый выстрел +0.2 Тревоги, при попадании +1.", "category": "weapon", "count": 1},
-
-        # ================== ОРУЖИЕ — БЛИЖНЕГО БОЯ ==================
         {"name": "Армейский нож", "desc": "Попадание 8, урон д6. До 3 ударов за ход. Каждое попадание +0.5 Тревоги.", "category": "weapon", "count": 1},
         {"name": "Лом (оружие)", "desc": "Попадание 5, урон д6. Один удар, не увеличивает Тревогу.", "category": "weapon", "count": 1},
         {"name": "Полицейская дубинка", "desc": "Попадание 8, урон 0. До 2 ударов за ход. Каждое попадание -1 к Боевому духу.", "category": "weapon", "count": 1},
-
-        # ================== ИНСТРУМЕНТЫ ==================
         {"name": "Лом (инструмент)", "desc": "+3 к результату броска на взлом или другие физические воздействия на предметы.", "category": "other", "count": 1},
         {"name": "Кусачки", "desc": "+3 к результату броска на технику, починку и т.д.", "category": "other", "count": 1},
         {"name": "Фонарик", "desc": "Позволяет видеть определённую область в темноте, нивелируя помеху.", "category": "other", "count": 1},
@@ -174,6 +175,60 @@ def ensure_player_shape(name):
     else:
         for k in POLITICS_KEYS:
             if k not in p["politics"]: p["politics"][k] = 0
+    # --- skills ---
+    if "skills" not in p or not isinstance(p["skills"], dict):
+        p["skills"] = get_default_skills()
+    else:
+        sk = p["skills"]
+        if "totalLevel" not in sk: sk["totalLevel"] = 0
+        if "characteristics" not in sk or not isinstance(sk["characteristics"], dict):
+            sk["characteristics"] = {k: 1 for k in CHARACTERISTIC_KEYS}
+        else:
+            for k in CHARACTERISTIC_KEYS:
+                if k not in sk["characteristics"]:
+                    sk["characteristics"][k] = 1
+        if "abilities" not in sk or not isinstance(sk["abilities"], dict):
+            sk["abilities"] = {}
+
+
+def parse_ability_id(ability_id):
+    """Разбирает id вида 'physiology.1.2' -> dict. Возвращает None при ошибке."""
+    if not isinstance(ability_id, str):
+        return None
+    parts = ability_id.split(".")
+    if len(parts) != 3:
+        return None
+    char = parts[0]
+    if char not in CHARACTERISTIC_KEYS:
+        return None
+    try:
+        tier = int(parts[1])
+        num = int(parts[2])
+    except ValueError:
+        return None
+    if tier < 1 or tier > 5 or num < 1 or num > 3:
+        return None
+    return {"char": char, "tier": tier, "num": num}
+
+
+def skills_spent(skills):
+    spent = 0
+    chars = skills.get("characteristics", {})
+    for c in CHARACTERISTIC_KEYS:
+        lvl = int(chars.get(c, 1) or 1)
+        spent += max(0, lvl - 1)
+    abilities = skills.get("abilities", {})
+    for aid, lvl in abilities.items():
+        try:
+            spent += max(0, int(lvl))
+        except (TypeError, ValueError):
+            pass
+    return spent
+
+
+def skills_available(skills):
+    total = int(skills.get("totalLevel", 0) or 0)
+    return max(0, total - skills_spent(skills))
 
 
 # ================================================================
@@ -207,6 +262,8 @@ async def load_state():
         if d:
             players_data.clear()
             players_data.update(json.loads(d))
+            for n in list(players_data.keys()):
+                ensure_player_shape(n)
 
         d = await r.get("dnd:base_inventory")
         if d:
@@ -216,7 +273,6 @@ async def load_state():
         d = await r.get("dnd:base_royals")
         if d: base_royals = json.loads(d)
 
-        # ---- Заготовки ----
         d = await r.get("dnd:item_templates")
         loaded_templates = []
         if d:
@@ -233,25 +289,15 @@ async def load_state():
             if not flag:
                 item_templates.extend(get_default_templates())
                 await r.set("dnd:templates_initialized", "1")
-                print(f"[load_state] Инициализированы дефолтные заготовки: "
-                      f"{len(item_templates)}", flush=True)
-            else:
-                print("[load_state] Заготовки пусты (пользователь удалил всё)", flush=True)
+                print(f"[load_state] Инициализированы дефолтные заготовки: {len(item_templates)}", flush=True)
 
-        # ГАРАНТИРУЕМ, что у каждой заготовки есть уникальный id.
-        # Иначе клиент шлёт templateId: undefined, JSON его отбрасывает,
-        # и сервер не может найти шаблон при выдаче.
         templates_changed = False
         for tpl in item_templates:
             if not tpl.get("id"):
                 tpl["id"] = new_id()
                 templates_changed = True
-
         if templates_changed:
-            await r.set("dnd:item_templates",
-                        json.dumps(item_templates, ensure_ascii=False))
-            print(f"[load_state] Проставлены id для {len(item_templates)} заготовок",
-                  flush=True)
+            await r.set("dnd:item_templates", json.dumps(item_templates, ensure_ascii=False))
 
         d = await r.get("dnd:pending_trades")
         if d:
@@ -441,6 +487,92 @@ async def handler(websocket):
                     else: new_val = cur
                     players_data[target]["politics"][key] = new_val
                     await broadcast_players()
+
+            # ================================================
+            # РАЗВИТИЕ ПЕРСОНАЖА
+            # ================================================
+            elif msg_type == "skills_set_level":
+                target = data.get("target")
+                level = max(0, safe_int(data.get("level"), 0))
+                if target:
+                    ensure_player_shape(target)
+                    players_data[target]["skills"]["totalLevel"] = level
+                    await broadcast_players()
+                    await save_state()
+
+            elif msg_type == "skills_reset":
+                target = data.get("target")
+                if target:
+                    ensure_player_shape(target)
+                    players_data[target]["skills"] = get_default_skills()
+                    await broadcast_players()
+                    await save_state()
+
+            elif msg_type == "skills_invest_characteristic":
+                player = data.get("player")
+                char = data.get("characteristic")
+                if player and char in CHARACTERISTIC_KEYS:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    if skills_available(sk) > 0:
+                        cur = int(sk["characteristics"].get(char, 1) or 1)
+                        if cur < 5:
+                            sk["characteristics"][char] = cur + 1
+                            await broadcast_players()
+                            await save_state()
+
+            elif msg_type == "skills_decrease_characteristic":
+                player = data.get("player")
+                char = data.get("characteristic")
+                if player and char in CHARACTERISTIC_KEYS:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    cur = int(sk["characteristics"].get(char, 1) or 1)
+                    if cur > 1:
+                        new_level = cur - 1
+                        # Запрещаем, если есть способности выше нового яруса
+                        has_higher = False
+                        for aid, lvl in sk.get("abilities", {}).items():
+                            if int(lvl or 0) > 0:
+                                p = parse_ability_id(aid)
+                                if p and p["char"] == char and p["tier"] > new_level:
+                                    has_higher = True
+                                    break
+                        if not has_higher:
+                            sk["characteristics"][char] = new_level
+                            await broadcast_players()
+                            await save_state()
+
+            elif msg_type == "skills_invest_ability":
+                player = data.get("player")
+                aid = data.get("abilityId")
+                parsed = parse_ability_id(aid)
+                if player and parsed:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    char_level = int(sk["characteristics"].get(parsed["char"], 1) or 1)
+                    if char_level >= parsed["tier"]:
+                        if skills_available(sk) > 0:
+                            cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
+                            if cur < 3:
+                                sk.setdefault("abilities", {})[aid] = cur + 1
+                                await broadcast_players()
+                                await save_state()
+
+            elif msg_type == "skills_remove_ability":
+                player = data.get("player")
+                aid = data.get("abilityId")
+                if player and aid:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
+                    if cur > 0:
+                        if cur - 1 <= 0:
+                            sk["abilities"].pop(aid, None)
+                        else:
+                            sk["abilities"][aid] = cur - 1
+                        await broadcast_players()
+                        await save_state()
 
             elif msg_type == "update_player_data":
                 target, data_type, item = data.get("target"), data.get("dataType"), data.get("item")
