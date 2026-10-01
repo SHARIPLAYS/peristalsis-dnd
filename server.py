@@ -216,18 +216,31 @@ async def load_state():
         d = await r.get("dnd:base_royals")
         if d: base_royals = json.loads(d)
 
+        # ---- Заготовки: правильная инициализация с флагом ----
         d = await r.get("dnd:item_templates")
+        loaded_templates = []
         if d:
+            try:
+                loaded_templates = json.loads(d)
+            except Exception:
+                loaded_templates = []
+
+        if loaded_templates:
             item_templates.clear()
-            item_templates.extend(json.loads(d))
+            item_templates.extend(loaded_templates)
         else:
-            # Первый запуск — заливаем дефолтные заготовки
-            item_templates.clear()
-            item_templates.extend(get_default_templates())
-            await r.set("dnd:item_templates",
-                        json.dumps(item_templates, ensure_ascii=False))
-            print(f"[load_state] Инициализированы дефолтные заготовки: "
-                  f"{len(item_templates)}", flush=True)
+            flag = await r.get("dnd:templates_initialized")
+            if not flag:
+                item_templates.clear()
+                item_templates.extend(get_default_templates())
+                await r.set("dnd:item_templates",
+                            json.dumps(item_templates, ensure_ascii=False))
+                await r.set("dnd:templates_initialized", "1")
+                print(f"[load_state] Инициализированы дефолтные заготовки: "
+                      f"{len(item_templates)}", flush=True)
+            else:
+                item_templates.clear()
+                print("[load_state] Заготовки пусты (пользователь удалил всё)", flush=True)
 
         d = await r.get("dnd:pending_trades")
         if d:
