@@ -12,6 +12,7 @@ clock_state = {
 }
 
 CATEGORIES = ("clothing", "weapon", "consumables", "artifact", "other")
+POLITICS_KEYS = ("comintern", "moralintern", "neutral", "redFeathers", "utopia")
 
 
 def safe_category(cat):
@@ -29,6 +30,10 @@ def get_default_body():
     }
 
 
+def get_default_politics():
+    return {k: 0 for k in POLITICS_KEYS}
+
+
 def get_default_player():
     return {
         "anxiety": [],
@@ -36,7 +41,8 @@ def get_default_player():
         "body": get_default_body(),
         "morale": 10,
         "anxietyLevel": 0.0,
-        "royals": 0
+        "royals": 0,
+        "politics": get_default_politics()
     }
 
 
@@ -57,15 +63,21 @@ def ensure_player_shape(name):
         p["anxietyLevel"] = 0.0
     if "royals" not in p:
         p["royals"] = 0
+    if "politics" not in p or not isinstance(p["politics"], dict):
+        p["politics"] = get_default_politics()
+    else:
+        for k in POLITICS_KEYS:
+            if k not in p["politics"]:
+                p["politics"][k] = 0
 
 
 players_data = {}
 clients = set()
 
-base_inventory = []           # Шкафчик базы
-base_royals = 0               # Общие роялы в шкафчике
-item_templates = []           # Заготовки хоста
-pending_trades = []           # Активные обмены
+base_inventory = []
+base_royals = 0
+item_templates = []
+pending_trades = []
 
 
 def new_id():
@@ -169,18 +181,6 @@ async def broadcast_event(kind, data):
         )
 
 
-def trade_side_summary(trade, prefix):
-    """Возвращает {type, ...} с описанием одной стороны сделки."""
-    t = trade.get(prefix + "Type", "item")
-    if t == "royals":
-        return {"type": "royals", "amount": trade.get(prefix + "Royals", 0)}
-    return {
-        "type": "item",
-        "item": trade.get(prefix + "Item"),
-        "count": trade.get(prefix + "Count", 1)
-    }
-
-
 async def handler(websocket):
     global base_royals
     clients.add(websocket)
@@ -203,13 +203,11 @@ async def handler(websocket):
 
             msg_type = data.get("type")
 
-            # --- ЧАСЫ ---
             if msg_type == "update":
                 clock_state.update(data["state"])
                 clock_state["lastUpdateTimestamp"] = time.time()
                 websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
 
-            # --- РЕГИСТРАЦИЯ ---
             elif msg_type == "register_player":
                 name = data.get("name")
                 if name:
@@ -219,7 +217,6 @@ async def handler(websocket):
                     else:
                         ensure_player_shape(name)
 
-            # --- СТАТЫ ---
             elif msg_type == "update_body":
                 target = data.get("target")
                 part_id = data.get("part")
@@ -272,7 +269,7 @@ async def handler(websocket):
 
                     await broadcast_players()
 
-            # --- РОЯЛЫ ИГРОКА (мастер) ---
+            # --- РОЯЛЫ ИГРОКА ---
             elif msg_type == "update_royals":
                 target = data.get("target")
                 amount = data.get("amount")
@@ -281,7 +278,7 @@ async def handler(websocket):
                     players_data[target]["royals"] = max(0, safe_int(amount, 0))
                     await broadcast_players()
 
-            # --- РОЯЛЫ БАЗЫ (мастер) ---
+            # --- РОЯЛЫ БАЗЫ ---
             elif msg_type == "base_royals_set":
                 base_royals = max(0, safe_int(data.get("amount"), 0))
                 await broadcast_social()
@@ -303,6 +300,26 @@ async def handler(websocket):
                             "from": src, "to": dst, "amount": amount
                         })
 
+            # --- ПОЛИТИЧЕСКИЕ ХАРАКТЕРИСТИКИ ---
+            elif msg_type == "update_politics":
+                target = data.get("target")
+                key = data.get("key")
+                if target and key in POLITICS_KEYS:
+                    ensure_player_shape(target)
+                    cur = int(players_data[target]["politics"].get(key, 0) or 0)
+                    if "delta" in data:
+                        try:
+                            delta = int(data["delta"])
+                        except (TypeError, ValueError):
+                            delta = 0
+                        new_val = cur + delta
+                    elif "value" in data:
+                        new_val = safe_int(data["value"], cur)
+                    else:
+                        new_val = cur
+                    players_data[target]["politics"][key] = new_val
+                    await broadcast_players()
+
             # --- ВЫДАЧА ПРЕДМЕТА ИГРОКУ ---
             elif msg_type == "update_player_data":
                 target = data.get("target")
@@ -318,7 +335,6 @@ async def handler(websocket):
                             bucket.append(item)
                         await broadcast_players()
 
-            # --- УДАЛЕНИЕ ПРЕДМЕТА ---
             elif msg_type == "delete_item":
                 target = data.get("target")
                 data_type = data.get("dataType")
@@ -331,7 +347,6 @@ async def handler(websocket):
                         ]
                         await broadcast_players()
 
-            # --- РЕДАКТИРОВАНИЕ ПРЕДМЕТА ---
             elif msg_type == "edit_item":
                 target = data.get("target")
                 data_type = data.get("dataType")
@@ -438,7 +453,6 @@ async def handler(websocket):
                             "player": player, "item": snapshot, "count": taken
                         })
 
-            # --- РОЯЛЫ: игрок кладёт/берёт из шкафчика ---
             elif msg_type == "base_royals_put":
                 player = data.get("player")
                 amount = max(0, safe_int(data.get("amount"), 0))
@@ -521,7 +535,7 @@ async def handler(websocket):
                         })
 
             # ================================================
-            # ТРЕЙД (с поддержкой роялов)
+            # ТРЕЙД
             # ================================================
             elif msg_type == "trade_propose":
                 src = data.get("from")
@@ -533,17 +547,14 @@ async def handler(websocket):
                 ensure_player_shape(src)
                 ensure_player_shape(dst)
 
-                # LEFT SIDE
                 from_item_id = data.get("fromItemId")
                 from_count = max(1, safe_int(data.get("fromCount", 1), 1))
                 from_royals = max(0, safe_int(data.get("fromRoyals", 0), 0))
 
-                # RIGHT SIDE
                 to_item_id = data.get("toItemId")
                 to_count = max(1, safe_int(data.get("toCount", 1), 1))
                 to_royals = max(0, safe_int(data.get("toRoyals", 0), 0))
 
-                # validate
                 f_ok, f_snap = False, None
                 if from_type == "royals":
                     if int(players_data[src].get("royals", 0) or 0) >= from_royals and from_royals > 0:
@@ -626,12 +637,10 @@ async def handler(websocket):
                         src = trade["from"]
                         dst = trade["to"]
 
-                        # validate both sides
                         ok = True
                         f_side = None
                         t_side = None
 
-                        # LEFT
                         if trade["fromType"] == "royals":
                             have = int(players_data[src].get("royals", 0) or 0)
                             if have < trade["fromRoyals"]:
@@ -649,7 +658,6 @@ async def handler(websocket):
                                 f_snap, f_taken = f_item
                                 f_side = {"type": "item", "item": f_snap, "count": f_taken}
 
-                        # RIGHT
                         if ok:
                             if trade["toType"] == "royals":
                                 have = int(players_data[dst].get("royals", 0) or 0)
@@ -668,9 +676,7 @@ async def handler(websocket):
                                     t_snap, t_taken = t_item
                                     t_side = {"type": "item", "item": t_snap, "count": t_taken}
 
-                        # rollback if failed on right after taking from left
                         if not ok:
-                            # try to restore left
                             if f_side and f_side["type"] == "item":
                                 add_item_to_bucket(
                                     players_data[src].setdefault("inventory", []),
@@ -681,7 +687,6 @@ async def handler(websocket):
                             await broadcast_social()
                             await broadcast_event("trade_failed", {"tradeId": trade_id})
                         else:
-                            # give left -> dst
                             if f_side["type"] == "royals":
                                 players_data[src]["royals"] = int(players_data[src].get("royals", 0) or 0) - f_side["amount"]
                                 players_data[dst]["royals"] = int(players_data[dst].get("royals", 0) or 0) + f_side["amount"]
@@ -690,7 +695,6 @@ async def handler(websocket):
                                     players_data[dst].setdefault("inventory", []),
                                     f_side["item"], f_side["count"]
                                 )
-                            # give right -> src
                             if t_side["type"] == "royals":
                                 players_data[dst]["royals"] = int(players_data[dst].get("royals", 0) or 0) - t_side["amount"]
                                 players_data[src]["royals"] = int(players_data[src].get("royals", 0) or 0) + t_side["amount"]
