@@ -4,7 +4,17 @@ import json
 import time
 import os
 import uuid
+import redis.asyncio as redis
 
+# ================================================================
+#                       REDIS (UPSTASH)
+# ================================================================
+REDIS_URL = os.environ.get("REDIS_URL")
+r = None  # будет инициализирован в main()
+
+# ================================================================
+#                       СОСТОЯНИЕ
+# ================================================================
 clock_state = {
     "isRunning": False,
     "baseTime": 43200,
@@ -13,6 +23,17 @@ clock_state = {
 
 CATEGORIES = ("clothing", "weapon", "consumables", "artifact", "other")
 POLITICS_KEYS = ("comintern", "moralintern", "neutral", "redFeathers", "utopia")
+
+players_data = {}
+clients = set()
+
+base_inventory = []
+base_royals = 0
+item_templates = []
+pending_trades = []
+
+# Lock, чтобы автосейв и ручной сейв не пересекались
+save_lock = asyncio.Lock()
 
 
 def safe_category(cat):
@@ -71,15 +92,83 @@ def ensure_player_shape(name):
                 p["politics"][k] = 0
 
 
-players_data = {}
-clients = set()
+# ================================================================
+#                    СОХРАНЕНИЕ / ЗАГРУЗКА
+# ================================================================
+async def save_state():
+    """Сохраняет всё состояние игры в Redis."""
+    if not r:
+        return
+    async with save_lock:
+        try:
+            pipe = r.pipeline()
+            pipe.set("dnd:clock_state", json.dumps(clock_state))
+            pipe.set("dnd:players_data", json.dumps(players_data, ensure_ascii=False))
+            pipe.set("dnd:base_inventory", json.dumps(base_inventory, ensure_ascii=False))
+            pipe.set("dnd:base_royals", json.dumps(base_royals))
+            pipe.set("dnd:item_templates", json.dumps(item_templates, ensure_ascii=False))
+            pipe.set("dnd:pending_trades", json.dumps(pending_trades, ensure_ascii=False))
+            await pipe.execute()
+        except Exception as e:
+            print(f"[save_state] Ошибка: {e}")
 
-base_inventory = []
-base_royals = 0
-item_templates = []
-pending_trades = []
+
+async def load_state():
+    """Загружает состояние из Redis при старте сервера."""
+    global base_royals
+    if not r:
+        print("[load_state] REDIS_URL не задан, пропускаем загрузку")
+        return
+    try:
+        pipe = r.pipeline()
+        pipe.get("dnd:clock_state")
+        pipe.get("dnd:players_data")
+        pipe.get("dnd:base_inventory")
+        pipe.get("dnd:base_royals")
+        pipe.get("dnd:item_templates")
+        pipe.get("dnd:pending_trades")
+        results = await pipe.execute()
+
+        if results[0]:
+            clock_state.update(json.loads(results[0]))
+
+        if results[1]:
+            players_data.clear()
+            players_data.update(json.loads(results[1]))
+
+        if results[2]:
+            base_inventory.clear()
+            base_inventory.extend(json.loads(results[2]))
+
+        if results[3]:
+            base_royals = json.loads(results[3])
+
+        if results[4]:
+            item_templates.clear()
+            item_templates.extend(json.loads(results[4]))
+
+        if results[5]:
+            pending_trades.clear()
+            pending_trades.extend(json.loads(results[5]))
+
+        print(f"[load_state] Состояние загружено: "
+              f"{len(players_data)} игроков, "
+              f"{len(base_inventory)} предметов в шкафчике, "
+              f"{len(item_templates)} заготовок")
+    except Exception as e:
+        print(f"[load_state] Ошибка: {e}")
 
 
+async def autosave_loop():
+    """Фоновое автосохранение каждые 15 секунд."""
+    while True:
+        await asyncio.sleep(15)
+        await save_state()
+
+
+# ================================================================
+#                       ХЕЛПЕРЫ
+# ================================================================
 def new_id():
     return uuid.uuid4().hex[:12]
 
@@ -151,6 +240,9 @@ def take_from_stack(lst, item_id, count):
     return snapshot, take
 
 
+# ================================================================
+#                       BROADCAST
+# ================================================================
 async def broadcast_players():
     if clients:
         websockets.broadcast(
@@ -181,6 +273,9 @@ async def broadcast_event(kind, data):
         )
 
 
+# ================================================================
+#                       ОБРАБОТЧИК WS
+# ================================================================
 async def handler(websocket):
     global base_royals
     clients.add(websocket)
@@ -207,6 +302,7 @@ async def handler(websocket):
                 clock_state.update(data["state"])
                 clock_state["lastUpdateTimestamp"] = time.time()
                 websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
+                await save_state()
 
             elif msg_type == "register_player":
                 name = data.get("name")
@@ -214,6 +310,7 @@ async def handler(websocket):
                     if name not in players_data:
                         players_data[name] = get_default_player()
                         await broadcast_players()
+                        await save_state()
                     else:
                         ensure_player_shape(name)
 
@@ -730,8 +827,27 @@ async def handler(websocket):
         clients.discard(websocket)
 
 
+# ================================================================
+#                       ЗАПУСК
+# ================================================================
 async def main():
+    global r
     port = int(os.environ.get("PORT", 8765))
+
+    if REDIS_URL:
+        try:
+            r = redis.from_url(REDIS_URL, decode_responses=True)
+            await r.ping()
+            print("[main] Redis подключён успешно")
+            await load_state()
+        except Exception as e:
+            print(f"[main] Не удалось подключиться к Redis: {e}")
+            r = None
+    else:
+        print("[main] REDIS_URL не задан, работаем без персистентности")
+
+    asyncio.create_task(autosave_loop())
+
     async with websockets.serve(handler, "0.0.0.0", port):
         print(f"Server started on port {port}")
         await asyncio.Future()
