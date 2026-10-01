@@ -31,6 +31,9 @@ pending_trades = []
 
 save_lock = asyncio.Lock()
 
+save_lock = asyncio.Lock()
+last_saved_data = None # <-- Добавляем эту строку
+
 
 def safe_category(cat):
     return cat if cat in CATEGORIES else "other"
@@ -218,15 +221,29 @@ def has_investment_in_tier(skills, char, tier):
 #                    СОХРАНЕНИЕ / ЗАГРУЗКА
 # ================================================================
 async def save_state():
+    global last_saved_data
     if not r: return
     async with save_lock:
         try:
-            await r.set("dnd:clock_state", json.dumps(clock_state))
-            await r.set("dnd:players_data", json.dumps(players_data, ensure_ascii=False))
-            await r.set("dnd:base_inventories", json.dumps(base_inventories, ensure_ascii=False))
-            await r.set("dnd:base_royals_dict", json.dumps(base_royals_dict))
-            await r.set("dnd:item_templates", json.dumps(item_templates, ensure_ascii=False))
-            await r.set("dnd:pending_trades", json.dumps(pending_trades, ensure_ascii=False))
+            # Собираем все данные в один словарь
+            payload = {
+                "dnd:clock_state": json.dumps(clock_state),
+                "dnd:players_data": json.dumps(players_data, ensure_ascii=False),
+                "dnd:base_inventories": json.dumps(base_inventories, ensure_ascii=False),
+                "dnd:base_royals_dict": json.dumps(base_royals_dict),
+                "dnd:item_templates": json.dumps(item_templates, ensure_ascii=False),
+                "dnd:pending_trades": json.dumps(pending_trades, ensure_ascii=False)
+            }
+            
+            # Если данные не изменились с прошлого раза — ничего не отправляем
+            current_data_str = str(payload)
+            if current_data_str == last_saved_data:
+                return
+            
+            # Отправляем всё одной командой MSET вместо 6 разных SET
+            await r.mset(payload)
+            last_saved_data = current_data_str
+            
         except Exception as e:
             print(f"[save_state] Ошибка: {e}", flush=True)
 
@@ -289,7 +306,7 @@ async def load_state():
 
 async def autosave_loop():
     while True:
-        await asyncio.sleep(15)
+        await asyncio.sleep(30)
         await save_state()
 
 
