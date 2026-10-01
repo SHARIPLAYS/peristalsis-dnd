@@ -70,7 +70,7 @@ def get_default_player():
 
 
 def get_default_templates():
-    """Дефолтные заготовки для хранилища мастера."""
+    """Дефолтные заготовки для хранилища мастера. ID им присваивается в load_state."""
     return [
         # ================== МЕДИЦИНСКИЕ ==================
         {"name": "Бинты", "desc": "Уменьшает степень кровотечения на 1, снимает половину накопившегося. Постепенно (каждый час или раз в 5 ходов, 3 ХП) восстанавливает ХП части тела, на которую наложена (максимум 5), после чего нужно поменять, иначе каждый час кидается д20 на инфекцию (с 16 инфекция).", "category": "consumables", "count": 1},
@@ -216,7 +216,7 @@ async def load_state():
         d = await r.get("dnd:base_royals")
         if d: base_royals = json.loads(d)
 
-        # ---- Заготовки: правильная инициализация с флагом ----
+        # ---- Заготовки ----
         d = await r.get("dnd:item_templates")
         loaded_templates = []
         if d:
@@ -225,22 +225,33 @@ async def load_state():
             except Exception:
                 loaded_templates = []
 
+        item_templates.clear()
         if loaded_templates:
-            item_templates.clear()
             item_templates.extend(loaded_templates)
         else:
             flag = await r.get("dnd:templates_initialized")
             if not flag:
-                item_templates.clear()
                 item_templates.extend(get_default_templates())
-                await r.set("dnd:item_templates",
-                            json.dumps(item_templates, ensure_ascii=False))
                 await r.set("dnd:templates_initialized", "1")
                 print(f"[load_state] Инициализированы дефолтные заготовки: "
                       f"{len(item_templates)}", flush=True)
             else:
-                item_templates.clear()
                 print("[load_state] Заготовки пусты (пользователь удалил всё)", flush=True)
+
+        # ГАРАНТИРУЕМ, что у каждой заготовки есть уникальный id.
+        # Иначе клиент шлёт templateId: undefined, JSON его отбрасывает,
+        # и сервер не может найти шаблон при выдаче.
+        templates_changed = False
+        for tpl in item_templates:
+            if not tpl.get("id"):
+                tpl["id"] = new_id()
+                templates_changed = True
+
+        if templates_changed:
+            await r.set("dnd:item_templates",
+                        json.dumps(item_templates, ensure_ascii=False))
+            print(f"[load_state] Проставлены id для {len(item_templates)} заготовок",
+                  flush=True)
 
         d = await r.get("dnd:pending_trades")
         if d:
@@ -283,6 +294,7 @@ def add_item_to_bucket(bucket, item, count=None):
 
 def find_item(lst, item_id):
     if not isinstance(lst, list): return None
+    if item_id is None: return None
     for i in lst:
         if str(i.get("id")) == str(item_id): return i
     return None
