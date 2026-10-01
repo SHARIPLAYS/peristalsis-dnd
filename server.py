@@ -53,10 +53,9 @@ def ensure_player_shape(name):
 players_data = {}
 clients = set()
 
-# --- СОЦИАЛЬНОЕ СОСТОЯНИЕ (без выброса на землю) ---
-shared_inventory = []    # [{"id","item","dataType","putBy","putAt"}]
-pending_requests = []    # [{"id","from","to","text","createdAt"}]
-pending_trades = []      # [{"id","from","to",...}]
+# --- СОЦИАЛЬНОЕ СОСТОЯНИЕ ---
+shared_inventory = []
+pending_trades = []
 
 
 def new_id():
@@ -96,7 +95,6 @@ async def broadcast_social():
             json.dumps({
                 "type": "sync_social",
                 "sharedInventory": shared_inventory,
-                "pendingRequests": pending_requests,
                 "pendingTrades": pending_trades
             })
         )
@@ -118,7 +116,6 @@ async def handler(websocket):
         await websocket.send(json.dumps({
             "type": "sync_social",
             "sharedInventory": shared_inventory,
-            "pendingRequests": pending_requests,
             "pendingTrades": pending_trades
         }))
 
@@ -130,13 +127,11 @@ async def handler(websocket):
 
             msg_type = data.get("type")
 
-            # --- ЧАСЫ ---
             if msg_type == "update":
                 clock_state.update(data["state"])
                 clock_state["lastUpdateTimestamp"] = time.time()
                 websockets.broadcast(clients, json.dumps({"type": "sync", "state": clock_state}))
 
-            # --- РЕГИСТРАЦИЯ ---
             elif msg_type == "register_player":
                 name = data.get("name")
                 if name:
@@ -146,7 +141,6 @@ async def handler(websocket):
                     else:
                         ensure_player_shape(name)
 
-            # --- ОБНОВЛЕНИЕ СТАТОВ ---
             elif msg_type == "update_body":
                 target = data.get("target")
                 part_id = data.get("part")
@@ -199,7 +193,6 @@ async def handler(websocket):
 
                     await broadcast_players()
 
-            # --- ВЫДАЧА ПРЕДМЕТА ---
             elif msg_type == "update_player_data":
                 target = data.get("target")
                 data_type = data.get("dataType")
@@ -211,7 +204,6 @@ async def handler(websocket):
                         bucket.append(item)
                         await broadcast_players()
 
-            # --- УДАЛЕНИЕ ПРЕДМЕТА ---
             elif msg_type == "delete_item":
                 target = data.get("target")
                 data_type = data.get("dataType")
@@ -224,7 +216,6 @@ async def handler(websocket):
                         ]
                         await broadcast_players()
 
-            # --- РЕДАКТИРОВАНИЕ ПРЕДМЕТА ---
             elif msg_type == "edit_item":
                 target = data.get("target")
                 data_type = data.get("dataType")
@@ -239,10 +230,9 @@ async def handler(websocket):
                         await broadcast_players()
 
             # ================================================
-            # СОЦИАЛЬНЫЕ ВЗАИМОДЕЙСТВИЯ (без выброса на землю)
+            # СОЦИАЛЬНЫЕ ВЗАИМОДЕЙСТВИЯ
             # ================================================
 
-            # --- ПЕРЕДАЧА ПРЕДМЕТА ---
             elif msg_type == "transfer_item":
                 src = data.get("from")
                 dst = data.get("to")
@@ -250,7 +240,7 @@ async def handler(websocket):
                 item_id = data.get("itemId")
                 if src and dst and item_id:
                     ensure_player_shape(src)
-                    ensure_player_shape(dst)
+                    ensure_player_shape(dst)   # получатель может быть офлайн
                     bucket = players_data[src].get(data_type, [])
                     item = remove_item(bucket, item_id)
                     if item:
@@ -260,7 +250,6 @@ async def handler(websocket):
                             "from": src, "to": dst, "item": item, "dataType": data_type
                         })
 
-            # --- ПОЛОЖИТЬ В ОБЩИЙ ---
             elif msg_type == "shared_put":
                 src = data.get("from")
                 item_id = data.get("itemId")
@@ -284,7 +273,6 @@ async def handler(websocket):
                             "from": src, "item": item, "sharedId": entry["id"]
                         })
 
-            # --- ВЗЯТЬ ИЗ ОБЩЕГО ---
             elif msg_type == "shared_take":
                 player = data.get("player")
                 shared_id = data.get("sharedItemId")
@@ -300,36 +288,6 @@ async def handler(websocket):
                             "player": player, "item": entry["item"]
                         })
 
-            # --- ЗАПРОС ПРЕДМЕТА ---
-            elif msg_type == "request_item":
-                src = data.get("from")
-                dst = data.get("to")
-                text = (data.get("text") or "").strip()
-                if src and dst and text:
-                    req = {
-                        "id": new_id(),
-                        "from": src,
-                        "to": dst,
-                        "text": text,
-                        "createdAt": time.time()
-                    }
-                    pending_requests.append(req)
-                    await broadcast_social()
-                    await broadcast_event("request_created", req)
-
-            elif msg_type == "request_response":
-                req_id = data.get("requestId")
-                accept = bool(data.get("accept"))
-                player = data.get("player")
-                req = next((r for r in pending_requests if r["id"] == req_id), None)
-                if req and req["to"] == player:
-                    pending_requests.remove(req)
-                    await broadcast_social()
-                    await broadcast_event("request_response", {
-                        "request": req, "accept": accept
-                    })
-
-            # --- ТРЕЙД ---
             elif msg_type == "trade_propose":
                 src = data.get("from")
                 dst = data.get("to")
@@ -337,7 +295,7 @@ async def handler(websocket):
                 to_item_id = data.get("toItemId")
                 if src and dst and from_item_id and to_item_id:
                     ensure_player_shape(src)
-                    ensure_player_shape(dst)
+                    ensure_player_shape(dst)   # получатель может быть офлайн
                     from_item = find_item(players_data[src].get("inventory", []), from_item_id)
                     to_item = find_item(players_data[dst].get("inventory", []), to_item_id)
                     if from_item and to_item:
@@ -358,6 +316,10 @@ async def handler(websocket):
                         pending_trades.append(trade)
                         await broadcast_social()
                         await broadcast_event("trade_proposed", trade)
+                    else:
+                        await broadcast_event("trade_failed", {
+                            "reason": "missing_item", "tradeId": None
+                        })
 
             elif msg_type == "trade_confirm":
                 trade_id = data.get("tradeId")
