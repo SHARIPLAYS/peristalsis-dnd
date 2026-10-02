@@ -52,13 +52,13 @@ def get_default_politics():
     return {k: 0 for k in POLITICS_KEYS}
 
 def get_default_skills():
-    # version 2: характеристики стартуют с 0; classSkill = 1 (бесплатно).
     return {
         "version": 2,
         "totalLevel": 0,
         "characteristics": {k: 0 for k in CHARACTERISTIC_KEYS},
         "abilities": {},
         "classSkill": 1,
+        "pendingChoice": False,   # NEW
         "bonuses": {k: 0 for k in BONUS_KEYS}
     }
 
@@ -162,7 +162,6 @@ def ensure_player_shape(name):
         for k in POLITICS_KEYS:
             if k not in p["politics"]: p["politics"][k] = 0
 
-    # Миграция старой системы характеристик (у которых старт с 1) на новую (старт с 0)
     if "skills" not in p or not isinstance(p["skills"], dict):
         p["skills"] = get_default_skills()
     else:
@@ -184,6 +183,9 @@ def ensure_player_shape(name):
         except (TypeError, ValueError):
             cur_cs = 0
         sk["classSkill"] = max(1, cur_cs)
+        # NEW: pendingChoice
+        if "pendingChoice" not in sk or not isinstance(sk["pendingChoice"], bool):
+            sk["pendingChoice"] = False
         if "bonuses" not in sk or not isinstance(sk["bonuses"], dict):
             sk["bonuses"] = {k: 0 for k in BONUS_KEYS}
         else:
@@ -212,7 +214,6 @@ def parse_ability_id(ability_id):
 
 
 def skills_spent(skills):
-    """Очки тратятся на: характеристики + способности + уровни класса (кроме 1-го)."""
     spent = 0
     chars = skills.get("characteristics", {}) or {}
     for k in CHARACTERISTIC_KEYS:
@@ -238,16 +239,6 @@ def skills_available(skills):
     return max(0, total - skills_spent(skills))
 
 
-def has_investment_in_tier(skills, char, tier):
-    for aid, lvl in skills.get("abilities", {}).items():
-        if int(lvl or 0) <= 0:
-            continue
-        p = parse_ability_id(aid)
-        if p and p["char"] == char and p["tier"] == tier:
-            return True
-    return False
-
-
 # ================================================================
 #                    СОХРАНЕНИЕ / ЗАГРУЗКА
 # ================================================================
@@ -264,14 +255,11 @@ async def save_state():
                 "dnd:item_templates": json.dumps(item_templates, ensure_ascii=False),
                 "dnd:pending_trades": json.dumps(pending_trades, ensure_ascii=False)
             }
-
             current_data_str = str(payload)
             if current_data_str == last_saved_data:
                 return
-
             await r.mset(payload)
             last_saved_data = current_data_str
-
         except Exception as e:
             print(f"[save_state] Ошибка: {e}", flush=True)
 
@@ -528,21 +516,24 @@ async def handler(websocket):
                     await broadcast_players()
                     await save_state()
 
-            # Характеристика: +1 (стоит 1 очко, открывает новый ярус)
+            # NEW: характеристика +1 (1 очко → ставит pendingChoice = True)
             elif msg_type == "skills_char_add":
                 player = data.get("player")
                 char = data.get("char")
                 if player and char in CHARACTERISTIC_KEYS:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
+                    if sk.get("pendingChoice"):
+                        continue  # нельзя качать характеристики, пока есть незакрытый выбор
                     if skills_available(sk) > 0:
                         cur = int(sk["characteristics"].get(char, 0) or 0)
                         if cur < 5:
                             sk["characteristics"][char] = cur + 1
+                            sk["pendingChoice"] = True
                             await broadcast_players()
                             await save_state()
 
-            # Характеристика: -1 (возвращает очко; запрещено, если есть способности в ярусах выше)
+            # NEW: характеристика -1 (сбрасывает pendingChoice, если он был)
             elif msg_type == "skills_char_remove":
                 player = data.get("player")
                 char = data.get("char")
@@ -564,35 +555,44 @@ async def handler(websocket):
                                 break
                         if ok:
                             sk["characteristics"][char] = new_lvl
+                            sk["pendingChoice"] = False
                             await broadcast_players()
                             await save_state()
 
-            # Классовый навык: +1 уровень (1 очко)
+            # NEW: классовый навык +1 (бесплатно если pendingChoice, иначе за очко)
             elif msg_type == "skills_invest_class":
                 player = data.get("player")
                 if player:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
-                    if skills_available(sk) > 0:
-                        cur = int(sk.get("classSkill", 1) or 1)
-                        if cur < 3:
+                    cur = int(sk.get("classSkill", 1) or 1)
+                    if cur < 3:
+                        pending = bool(sk.get("pendingChoice"))
+                        if pending:
+                            sk["classSkill"] = cur + 1
+                            sk["pendingChoice"] = False
+                            await broadcast_players()
+                            await save_state()
+                        elif skills_available(sk) > 0:
                             sk["classSkill"] = cur + 1
                             await broadcast_players()
                             await save_state()
 
-            # Классовый навык: -1 уровень (не ниже 1 — первый бесплатный)
             elif msg_type == "skills_remove_class":
                 player = data.get("player")
                 if player:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
                     cur = int(sk.get("classSkill", 1) or 1)
-                    if cur > 1:
+                    if cur > 1 and not sk.get("pendingChoice"):
                         sk["classSkill"] = cur - 1
                         await broadcast_players()
                         await save_state()
 
-            # Открытие нового навыка (нужен открытый ярус) ИЛИ прокачка открытого (ярус не важен)
+            # NEW: открытие/прокачка навыка
+            #   Если pendingChoice = True → бесплатно, сбрасывает флаг.
+            #   Иначе → тратит 1 очко.
+            #   При открытии нового навыка (cur == 0) нужен открытый ярус.
             elif msg_type == "skills_invest_ability":
                 player = data.get("player")
                 aid = data.get("abilityId")
@@ -603,20 +603,31 @@ async def handler(websocket):
                     char = parsed["char"]
                     tier = parsed["tier"]
                     cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
+                    pending = bool(sk.get("pendingChoice"))
 
-                    if skills_available(sk) > 0 and cur < 3:
+                    if cur < 3:
                         if cur > 0:
-                            # Прокачка уже открытого навыка — ярус не проверяем
-                            sk["abilities"][aid] = cur + 1
-                            await broadcast_players()
-                            await save_state()
-                        else:
-                            # Открытие нового — нужен открытый ярус
-                            char_lvl = int(sk["characteristics"].get(char, 0) or 0)
-                            if char_lvl >= tier:
-                                sk.setdefault("abilities", {})[aid] = 1
+                            if pending:
+                                sk["abilities"][aid] = cur + 1
+                                sk["pendingChoice"] = False
                                 await broadcast_players()
                                 await save_state()
+                            elif skills_available(sk) > 0:
+                                sk["abilities"][aid] = cur + 1
+                                await broadcast_players()
+                                await save_state()
+                        else:
+                            char_lvl = int(sk["characteristics"].get(char, 0) or 0)
+                            if char_lvl >= tier:
+                                if pending:
+                                    sk.setdefault("abilities", {})[aid] = 1
+                                    sk["pendingChoice"] = False
+                                    await broadcast_players()
+                                    await save_state()
+                                elif skills_available(sk) > 0:
+                                    sk.setdefault("abilities", {})[aid] = 1
+                                    await broadcast_players()
+                                    await save_state()
 
             elif msg_type == "skills_remove_ability":
                 player = data.get("player")
