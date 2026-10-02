@@ -52,11 +52,11 @@ def get_default_politics():
     return {k: 0 for k in POLITICS_KEYS}
 
 def get_default_skills():
-    # classSkill = 1 — первый уровень классового навыка активен по умолчанию,
-    # не требует очка прокачки.
+    # version 2: характеристики стартуют с 0; classSkill = 1 (бесплатно).
     return {
+        "version": 2,
         "totalLevel": 0,
-        "characteristics": {k: 1 for k in CHARACTERISTIC_KEYS},
+        "characteristics": {k: 0 for k in CHARACTERISTIC_KEYS},
         "abilities": {},
         "classSkill": 1,
         "bonuses": {k: 0 for k in BONUS_KEYS}
@@ -161,20 +161,24 @@ def ensure_player_shape(name):
     else:
         for k in POLITICS_KEYS:
             if k not in p["politics"]: p["politics"][k] = 0
+
+    # Миграция старой системы характеристик (у которых старт с 1) на новую (старт с 0)
     if "skills" not in p or not isinstance(p["skills"], dict):
         p["skills"] = get_default_skills()
     else:
         sk = p["skills"]
+        if sk.get("version") != 2:
+            p["skills"] = get_default_skills()
+            sk = p["skills"]
         if "totalLevel" not in sk: sk["totalLevel"] = 0
         if "characteristics" not in sk or not isinstance(sk["characteristics"], dict):
-            sk["characteristics"] = {k: 1 for k in CHARACTERISTIC_KEYS}
+            sk["characteristics"] = {k: 0 for k in CHARACTERISTIC_KEYS}
         else:
             for k in CHARACTERISTIC_KEYS:
                 if k not in sk["characteristics"]:
-                    sk["characteristics"][k] = 1
+                    sk["characteristics"][k] = 0
         if "abilities" not in sk or not isinstance(sk["abilities"], dict):
             sk["abilities"] = {}
-        # Первый уровень классового навыка всегда активен (мин. 1)
         try:
             cur_cs = int(sk.get("classSkill") or 0)
         except (TypeError, ValueError):
@@ -186,6 +190,7 @@ def ensure_player_shape(name):
             for k in BONUS_KEYS:
                 if k not in sk["bonuses"]:
                     sk["bonuses"][k] = 0
+        sk["version"] = 2
 
 
 def parse_ability_id(ability_id):
@@ -207,16 +212,22 @@ def parse_ability_id(ability_id):
 
 
 def skills_spent(skills):
-    """Очки тратятся только на способности + уровни классового навыка (кроме первого)."""
+    """Очки тратятся на: характеристики + способности + уровни класса (кроме 1-го)."""
     spent = 0
+    chars = skills.get("characteristics", {}) or {}
+    for k in CHARACTERISTIC_KEYS:
+        try:
+            spent += max(0, int(chars.get(k, 0) or 0))
+        except (TypeError, ValueError):
+            pass
     for aid, lvl in skills.get("abilities", {}).items():
         try:
-            spent += max(0, int(lvl))
+            spent += max(0, int(lvl or 0))
         except (TypeError, ValueError):
             pass
     try:
         cs = int(skills.get("classSkill") or 0)
-        spent += max(0, cs - 1)  # первый уровень бесплатный
+        spent += max(0, cs - 1)
     except (TypeError, ValueError):
         pass
     return spent
@@ -517,6 +528,46 @@ async def handler(websocket):
                     await broadcast_players()
                     await save_state()
 
+            # Характеристика: +1 (стоит 1 очко, открывает новый ярус)
+            elif msg_type == "skills_char_add":
+                player = data.get("player")
+                char = data.get("char")
+                if player and char in CHARACTERISTIC_KEYS:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    if skills_available(sk) > 0:
+                        cur = int(sk["characteristics"].get(char, 0) or 0)
+                        if cur < 5:
+                            sk["characteristics"][char] = cur + 1
+                            await broadcast_players()
+                            await save_state()
+
+            # Характеристика: -1 (возвращает очко; запрещено, если есть способности в ярусах выше)
+            elif msg_type == "skills_char_remove":
+                player = data.get("player")
+                char = data.get("char")
+                if player and char in CHARACTERISTIC_KEYS:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    cur = int(sk["characteristics"].get(char, 0) or 0)
+                    if cur > 0:
+                        new_lvl = cur - 1
+                        ok = True
+                        for aid, lvl in (sk.get("abilities") or {}).items():
+                            try:
+                                if int(lvl or 0) <= 0: continue
+                            except (TypeError, ValueError):
+                                continue
+                            parsed = parse_ability_id(aid)
+                            if parsed and parsed["char"] == char and parsed["tier"] > new_lvl:
+                                ok = False
+                                break
+                        if ok:
+                            sk["characteristics"][char] = new_lvl
+                            await broadcast_players()
+                            await save_state()
+
+            # Классовый навык: +1 уровень (1 очко)
             elif msg_type == "skills_invest_class":
                 player = data.get("player")
                 if player:
@@ -529,17 +580,19 @@ async def handler(websocket):
                             await broadcast_players()
                             await save_state()
 
+            # Классовый навык: -1 уровень (не ниже 1 — первый бесплатный)
             elif msg_type == "skills_remove_class":
                 player = data.get("player")
                 if player:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
                     cur = int(sk.get("classSkill", 1) or 1)
-                    if cur > 1:  # нельзя снять бесплатный первый уровень
+                    if cur > 1:
                         sk["classSkill"] = cur - 1
                         await broadcast_players()
                         await save_state()
 
+            # Открытие нового навыка (нужен открытый ярус) ИЛИ прокачка открытого (ярус не важен)
             elif msg_type == "skills_invest_ability":
                 player = data.get("player")
                 aid = data.get("abilityId")
@@ -549,39 +602,34 @@ async def handler(websocket):
                     sk = players_data[player]["skills"]
                     char = parsed["char"]
                     tier = parsed["tier"]
-                    char_level = int(sk["characteristics"].get(char, 1) or 1)
+                    cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
 
-                    tier_unlocked = False
-                    if tier == 1:
-                        tier_unlocked = True
-                    elif char_level >= tier:
-                        tier_unlocked = True
-                    elif has_investment_in_tier(sk, char, tier - 1):
-                        tier_unlocked = True
-
-                    if tier_unlocked and skills_available(sk) > 0:
-                        cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
-                        if cur < 3:
-                            sk.setdefault("abilities", {})[aid] = cur + 1
-                            sk["characteristics"][char] = int(sk["characteristics"].get(char, 1)) + 1
+                    if skills_available(sk) > 0 and cur < 3:
+                        if cur > 0:
+                            # Прокачка уже открытого навыка — ярус не проверяем
+                            sk["abilities"][aid] = cur + 1
                             await broadcast_players()
                             await save_state()
+                        else:
+                            # Открытие нового — нужен открытый ярус
+                            char_lvl = int(sk["characteristics"].get(char, 0) or 0)
+                            if char_lvl >= tier:
+                                sk.setdefault("abilities", {})[aid] = 1
+                                await broadcast_players()
+                                await save_state()
 
             elif msg_type == "skills_remove_ability":
                 player = data.get("player")
                 aid = data.get("abilityId")
-                parsed = parse_ability_id(aid)
-                if player and parsed:
+                if player and aid:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
-                    char = parsed["char"]
                     cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
                     if cur > 0:
                         if cur - 1 <= 0:
                             sk["abilities"].pop(aid, None)
                         else:
                             sk["abilities"][aid] = cur - 1
-                        sk["characteristics"][char] = max(1, int(sk["characteristics"].get(char, 2)) - 1)
                         await broadcast_players()
                         await save_state()
 
