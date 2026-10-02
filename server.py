@@ -21,6 +21,7 @@ CATEGORIES = ("clothing", "weapon", "consumables", "artifact", "other")
 POLITICS_KEYS = ("comintern", "moralintern", "neutral", "redFeathers", "utopia")
 CHARACTERISTIC_KEYS = ("physiology", "psyche", "intellect", "motorica")
 BONUS_KEYS = ("physiology", "psyche", "intellect", "motorica", "speed", "morale")
+CHAR_MAX = 6
 
 players_data = {}
 clients = set()
@@ -53,12 +54,14 @@ def get_default_politics():
 
 def get_default_skills():
     return {
-        "version": 2,
+        "version": 3,
         "totalLevel": 0,
-        "characteristics": {k: 0 for k in CHARACTERISTIC_KEYS},
+        # Характеристики стартуют с 1, ярусы не открыты.
+        "characteristics": {k: 1 for k in CHARACTERISTIC_KEYS},
         "abilities": {},
         "classSkill": 1,
-        "pendingChoice": False,   # NEW
+        "pendingChoice": False,
+        "lastUpgradedChar": None,
         "bonuses": {k: 0 for k in BONUS_KEYS}
     }
 
@@ -82,7 +85,7 @@ def get_default_templates():
         {"name": "Обезболивающее (наркотик)", "desc": "Содержит героин. При частом употреблении (более 4 раз в день) вызывает привыкание. Убирает все дебаффы на половину от Травм. Действует 2 часа (весь бой).", "category": "consumables", "count": 1},
         {"name": "Ненаркотические обезболивающие", "desc": "Не вызывают привыкания, уменьшают дебаффы от травм лишь на четверть (округляя вниз). Действуют 5 часов.", "category": "consumables", "count": 1},
         {"name": "Психотропик «Психнет»", "desc": "Временно (д4+4 часов) блокирует проявления психической болезни, -2 к результату на все проверки, -3 на социальные проверки и попадание. После действия расстройство усиливается в 2 раза на 2 часа (кроме амнезии).", "category": "consumables", "count": 1},
-        {"name": "Психотропик «Психнет+» (наркотик)", "desc": "Временно (д8+4 часов) блокирует проявления психической болезни, +2 к результату на все проверки, -3 на социальные проверки и попадание. Нельзя принимать больше 4 раз в день. При употреблении после 4 приёмов может убрать Психическое заболевание навсегда (д20, удача 20).", "category": "consumables", "count": 1},
+        {"name": "Психотропик «Психнет+» (наркотик)", "desc": "Временно (д8+4 часов) блокирует проявления психической болезни, +2 к результату на все проверки, -3 на социальные проверки и попадание. Нельзя принимать больше 4 раз в день. При употреблении после 4 приёмов может убрать Психическое заболевание навсегда (d20, удача 20).", "category": "consumables", "count": 1},
         {"name": "Препарат «Ренинганг»", "desc": "Убирает Передозировку, однако уменьшает Боевой дух до 3.", "category": "consumables", "count": 1},
         {"name": "Пиво «БиерБрудер» (наркотик)", "desc": "Слабый алкогольный напиток. +1 к Боевому духу, -1 к попаданию, стойкости и самообладанию. 2 часа. Эффекты суммируются.", "category": "consumables", "count": 1},
         {"name": "Вино «Виолет» (наркотик)", "desc": "Средний алкогольный напиток. +2 к Боевому духу, -2 к попаданию, стойкости и самообладанию. 2 часа. Эффекты суммируются.", "category": "consumables", "count": 1},
@@ -166,16 +169,26 @@ def ensure_player_shape(name):
         p["skills"] = get_default_skills()
     else:
         sk = p["skills"]
-        if sk.get("version") != 2:
-            p["skills"] = get_default_skills()
-            sk = p["skills"]
+        # Миграция на v3: характеристики >= 1, сброс флагов выбора.
+        if sk.get("version") != 3:
+            chars = sk.get("characteristics") or {}
+            for k in CHARACTERISTIC_KEYS:
+                try:
+                    chars[k] = max(1, int(chars.get(k, 1) or 1))
+                except (TypeError, ValueError):
+                    chars[k] = 1
+            sk["characteristics"] = chars
+            sk["pendingChoice"] = False
+            sk["lastUpgradedChar"] = None
+            sk["version"] = 3
+
         if "totalLevel" not in sk: sk["totalLevel"] = 0
         if "characteristics" not in sk or not isinstance(sk["characteristics"], dict):
-            sk["characteristics"] = {k: 0 for k in CHARACTERISTIC_KEYS}
+            sk["characteristics"] = {k: 1 for k in CHARACTERISTIC_KEYS}
         else:
             for k in CHARACTERISTIC_KEYS:
                 if k not in sk["characteristics"]:
-                    sk["characteristics"][k] = 0
+                    sk["characteristics"][k] = 1
         if "abilities" not in sk or not isinstance(sk["abilities"], dict):
             sk["abilities"] = {}
         try:
@@ -183,16 +196,16 @@ def ensure_player_shape(name):
         except (TypeError, ValueError):
             cur_cs = 0
         sk["classSkill"] = max(1, cur_cs)
-        # NEW: pendingChoice
         if "pendingChoice" not in sk or not isinstance(sk["pendingChoice"], bool):
             sk["pendingChoice"] = False
+        if "lastUpgradedChar" not in sk:
+            sk["lastUpgradedChar"] = None
         if "bonuses" not in sk or not isinstance(sk["bonuses"], dict):
             sk["bonuses"] = {k: 0 for k in BONUS_KEYS}
         else:
             for k in BONUS_KEYS:
                 if k not in sk["bonuses"]:
                     sk["bonuses"][k] = 0
-        sk["version"] = 2
 
 
 def parse_ability_id(ability_id):
@@ -214,24 +227,15 @@ def parse_ability_id(ability_id):
 
 
 def skills_spent(skills):
-    spent = 0
+    """Очки тратятся только на прокачку характеристик. Способности и классовые уровни — бесплатны."""
     chars = skills.get("characteristics", {}) or {}
+    total = 0
     for k in CHARACTERISTIC_KEYS:
         try:
-            spent += max(0, int(chars.get(k, 0) or 0))
+            total += max(1, int(chars.get(k, 1) or 1))
         except (TypeError, ValueError):
-            pass
-    for aid, lvl in skills.get("abilities", {}).items():
-        try:
-            spent += max(0, int(lvl or 0))
-        except (TypeError, ValueError):
-            pass
-    try:
-        cs = int(skills.get("classSkill") or 0)
-        spent += max(0, cs - 1)
-    except (TypeError, ValueError):
-        pass
-    return spent
+            total += 1
+    return max(0, total - 4)
 
 
 def skills_available(skills):
@@ -516,7 +520,7 @@ async def handler(websocket):
                     await broadcast_players()
                     await save_state()
 
-            # NEW: характеристика +1 (1 очко → ставит pendingChoice = True)
+            # Характеристика +1: стоит 1 очко, ставит обязательный выбор.
             elif msg_type == "skills_char_add":
                 player = data.get("player")
                 char = data.get("char")
@@ -524,75 +528,64 @@ async def handler(websocket):
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
                     if sk.get("pendingChoice"):
-                        continue  # нельзя качать характеристики, пока есть незакрытый выбор
+                        continue  # пока выбор не сделан — характеристику качать нельзя
                     if skills_available(sk) > 0:
-                        cur = int(sk["characteristics"].get(char, 0) or 0)
-                        if cur < 5:
+                        cur = int(sk["characteristics"].get(char, 1) or 1)
+                        if cur < CHAR_MAX:
                             sk["characteristics"][char] = cur + 1
                             sk["pendingChoice"] = True
+                            sk["lastUpgradedChar"] = char
                             await broadcast_players()
                             await save_state()
 
-            # NEW: характеристика -1 (сбрасывает pendingChoice, если он был)
+            # Характеристика -1: возвращает очко, сбрасывает выбор.
             elif msg_type == "skills_char_remove":
                 player = data.get("player")
                 char = data.get("char")
                 if player and char in CHARACTERISTIC_KEYS:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
-                    cur = int(sk["characteristics"].get(char, 0) or 0)
-                    if cur > 0:
+                    cur = int(sk["characteristics"].get(char, 1) or 1)
+                    if cur > 1:
                         new_lvl = cur - 1
                         ok = True
+                        # Запрещаем откат, если он «сломает» уже открытые способности
+                        # (ярус способности должен остаться открытым: char >= tier + 1).
                         for aid, lvl in (sk.get("abilities") or {}).items():
                             try:
                                 if int(lvl or 0) <= 0: continue
                             except (TypeError, ValueError):
                                 continue
                             parsed = parse_ability_id(aid)
-                            if parsed and parsed["char"] == char and parsed["tier"] > new_lvl:
+                            if parsed and parsed["char"] == char and parsed["tier"] + 1 > new_lvl:
                                 ok = False
                                 break
                         if ok:
                             sk["characteristics"][char] = new_lvl
                             sk["pendingChoice"] = False
+                            sk["lastUpgradedChar"] = None
                             await broadcast_players()
                             await save_state()
 
-            # NEW: классовый навык +1 (бесплатно если pendingChoice, иначе за очко)
+            # Классовый навык: только во время обязательного выбора, бесплатно.
             elif msg_type == "skills_invest_class":
                 player = data.get("player")
                 if player:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
+                    if not sk.get("pendingChoice"):
+                        continue  # без активного выбора качать класс нельзя
                     cur = int(sk.get("classSkill", 1) or 1)
                     if cur < 3:
-                        pending = bool(sk.get("pendingChoice"))
-                        if pending:
-                            sk["classSkill"] = cur + 1
-                            sk["pendingChoice"] = False
-                            await broadcast_players()
-                            await save_state()
-                        elif skills_available(sk) > 0:
-                            sk["classSkill"] = cur + 1
-                            await broadcast_players()
-                            await save_state()
-
-            elif msg_type == "skills_remove_class":
-                player = data.get("player")
-                if player:
-                    ensure_player_shape(player)
-                    sk = players_data[player]["skills"]
-                    cur = int(sk.get("classSkill", 1) or 1)
-                    if cur > 1 and not sk.get("pendingChoice"):
-                        sk["classSkill"] = cur - 1
+                        sk["classSkill"] = cur + 1
+                        sk["pendingChoice"] = False
+                        sk["lastUpgradedChar"] = None
                         await broadcast_players()
                         await save_state()
 
-            # NEW: открытие/прокачка навыка
-            #   Если pendingChoice = True → бесплатно, сбрасывает флаг.
-            #   Иначе → тратит 1 очко.
-            #   При открытии нового навыка (cur == 0) нужен открытый ярус.
+            # Открытие / прокачка навыка — только во время обязательного выбора и бесплатно.
+            # Открыть НОВЫЙ можно только в характеристике, которую прокачали последней.
+            # Прокачать УЖЕ ОТКРЫТЫЙ можно любой.
             elif msg_type == "skills_invest_ability":
                 player = data.get("player")
                 aid = data.get("abilityId")
@@ -600,34 +593,34 @@ async def handler(websocket):
                 if player and parsed:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
+                    if not sk.get("pendingChoice"):
+                        continue  # без активного выбора качать навыки нельзя
+
                     char = parsed["char"]
                     tier = parsed["tier"]
                     cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
-                    pending = bool(sk.get("pendingChoice"))
+                    if cur >= 3:
+                        continue
 
-                    if cur < 3:
-                        if cur > 0:
-                            if pending:
-                                sk["abilities"][aid] = cur + 1
-                                sk["pendingChoice"] = False
-                                await broadcast_players()
-                                await save_state()
-                            elif skills_available(sk) > 0:
-                                sk["abilities"][aid] = cur + 1
-                                await broadcast_players()
-                                await save_state()
-                        else:
-                            char_lvl = int(sk["characteristics"].get(char, 0) or 0)
-                            if char_lvl >= tier:
-                                if pending:
-                                    sk.setdefault("abilities", {})[aid] = 1
-                                    sk["pendingChoice"] = False
-                                    await broadcast_players()
-                                    await save_state()
-                                elif skills_available(sk) > 0:
-                                    sk.setdefault("abilities", {})[aid] = 1
-                                    await broadcast_players()
-                                    await save_state()
+                    if cur > 0:
+                        # Улучшение уже открытого — любая характеристика.
+                        sk["abilities"][aid] = cur + 1
+                        sk["pendingChoice"] = False
+                        sk["lastUpgradedChar"] = None
+                        await broadcast_players()
+                        await save_state()
+                    else:
+                        # Новый навык — только у последней прокачанной характеристики
+                        # и только если ярус открыт (char >= tier + 1).
+                        if char != sk.get("lastUpgradedChar"):
+                            continue
+                        char_lvl = int(sk["characteristics"].get(char, 1) or 1)
+                        if char_lvl >= tier + 1:
+                            sk.setdefault("abilities", {})[aid] = 1
+                            sk["pendingChoice"] = False
+                            sk["lastUpgradedChar"] = None
+                            await broadcast_players()
+                            await save_state()
 
             elif msg_type == "skills_remove_ability":
                 player = data.get("player")
