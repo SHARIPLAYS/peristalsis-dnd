@@ -20,6 +20,7 @@ clock_state = {
 CATEGORIES = ("clothing", "weapon", "consumables", "artifact", "other")
 POLITICS_KEYS = ("comintern", "moralintern", "neutral", "redFeathers", "utopia")
 CHARACTERISTIC_KEYS = ("physiology", "psyche", "intellect", "motorica")
+BONUS_KEYS = ("physiology", "psyche", "intellect", "motorica", "speed", "morale")
 
 players_data = {}
 clients = set()
@@ -30,9 +31,7 @@ item_templates = []
 pending_trades = []
 
 save_lock = asyncio.Lock()
-
-save_lock = asyncio.Lock()
-last_saved_data = None # <-- Добавляем эту строку
+last_saved_data = None
 
 
 def safe_category(cat):
@@ -56,7 +55,9 @@ def get_default_skills():
     return {
         "totalLevel": 0,
         "characteristics": {k: 1 for k in CHARACTERISTIC_KEYS},
-        "abilities": {}
+        "abilities": {},
+        "classSkill": 0,
+        "bonuses": {k: 0 for k in BONUS_KEYS}
     }
 
 def get_default_player():
@@ -93,32 +94,32 @@ def get_default_templates():
         {"name": "Препарат «Гехирм»", "desc": "Синие таблетки. +2 к психике. 2 часа.", "category": "consumables", "count": 1},
         {"name": "Куриная ножка в соусе Стрипп", "desc": "+2 к физиологии. 2 часа.", "category": "consumables", "count": 1},
         {"name": "Тёмный шоколад «Шок»", "desc": "+2 к интеллекту. 2 часа.", "category": "consumables", "count": 1},
-        {"name": "Морское пальто", "desc": "Туловище. +1 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"physiology": 1, "def": {"torso": 1}}},
-        {"name": "Пиджак «Диско»", "desc": "Туловище. +1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"intellect": 1, "def": {"torso": 1}}},
-        {"name": "Спортивная куртка", "desc": "Туловище. +1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"motorica": 1, "def": {"torso": 1}}},
-        {"name": "Красный мундир Эрстании", "desc": "Туловище. +2 к физиологии, -1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"physiology": 2, "intellect": -1, "def": {"torso": 2}}},
-        {"name": "Чёрный плащ", "desc": "Туловище. -3 к попаданию противника, +1 к интеллекту и психологии, -2 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"intellect": 1, "psyche": 1, "physiology": -2, "def": {"torso": 1}}},
-        {"name": "Широкополая шляпа с белыми цветами", "desc": "Голова. +1 к психике.", "category": "clothing", "count": 1, "bonuses": {"psyche": 1, "def": {"head": 0}}},
-        {"name": "Обтягивающая спортивная шапочка", "desc": "Голова. +1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"motorica": 1, "def": {"head": 1}}},
-        {"name": "Резинка для головы", "desc": "Голова. +1 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"physiology": 1, "def": {"head": 0}}},
-        {"name": "Толстые круглые очки", "desc": "Голова. +1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"intellect": 1, "def": {"head": 0}}},
-        {"name": "Оранжевая шапка", "desc": "Голова. +1 к физиологии и моторике, -1 к психике.", "category": "clothing", "count": 1, "bonuses": {"physiology": 1, "motorica": 1, "psyche": -1, "def": {"head": 1}}},
-        {"name": "Старый кивер Эрстанской армии", "desc": "Голова. +2 к физиологии, -1 к психике.", "category": "clothing", "count": 1, "bonuses": {"physiology": 2, "psyche": -1, "def": {"head": 2}}},
-        {"name": "Бриджи", "desc": "Ноги. +1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"motorica": 1, "def": {"leftLeg": 1, "rightLeg": 1}}},
-        {"name": "Полицейские брюки", "desc": "Ноги. +1 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"physiology": 1, "def": {"leftLeg": 1, "rightLeg": 1}}},
-        {"name": "Песчаные брюки с молнией", "desc": "Ноги. +1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"intellect": 1, "def": {"leftLeg": 1, "rightLeg": 1}}},
-        {"name": "Серо-коричневые штаны с ремнём", "desc": "Ноги. +1 к психике.", "category": "clothing", "count": 1, "bonuses": {"psyche": 1, "def": {"leftLeg": 1, "rightLeg": 1}}},
-        {"name": "Шерстяные штаны до колена", "desc": "Ноги. +2 к моторике, -1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"motorica": 2, "intellect": -1, "def": {"leftLeg": 1, "rightLeg": 1}}},
-        {"name": "Штаны легионера Эрстании", "desc": "Ноги. +2 к физиологии, -1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"physiology": 2, "motorica": -1, "def": {"leftLeg": 2, "rightLeg": 2}}},
-        {"name": "Отвратительные зелёные туфли", "desc": "Ступни. +1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"motorica": 1}},
-        {"name": "Шуе", "desc": "Ступни. +1 к интеллекту.", "category": "clothing", "count": 1, "bonuses": {"intellect": 1}},
-        {"name": "Берды", "desc": "Ступни. +1 к психике.", "category": "clothing", "count": 1, "bonuses": {"psyche": 1}},
-        {"name": "Длинные кожаные военные ботинки", "desc": "Ступни. +1 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"physiology": 1}},
-        {"name": "Чёрные туфли с упряжкой", "desc": "Ступни. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"intellect": 2, "motorica": -1}},
-        {"name": "Красные башмаки гангстера", "desc": "Ступни. +2 к физиологии, -1 к психике.", "category": "clothing", "count": 1, "bonuses": {"physiology": 2, "psyche": -1}},
-        {"name": "Защитный костюм Граухайт М1", "desc": "Покрывает всё тело. +2 к интеллекту, -1 к моторике.", "category": "clothing", "count": 1, "bonuses": {"intellect": 2, "motorica": -1, "def": {"head": 1, "torso": 2, "leftArm": 2, "rightArm": 2, "leftLeg": 2, "rightLeg": 2}}},
-        {"name": "Открытое платье", "desc": "+2 к психике, +1 к интеллекту, -3 к моторике.", "category": "clothing", "count": 1, "bonuses": {"psyche": 2, "intellect": 1, "motorica": -3}},
-        {"name": "Медицинский халат", "desc": "+3 к психике, +1 к интеллекту, -3 к моторике, -1 к физиологии.", "category": "clothing", "count": 1, "bonuses": {"psyche": 3, "intellect": 1, "motorica": -3, "physiology": -1}},
+        {"name": "Морское пальто", "desc": "Туловище. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"torso": 1}}},
+        {"name": "Пиджак «Диско»", "desc": "Туловище. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"torso": 1}}},
+        {"name": "Спортивная куртка", "desc": "Туловище. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"torso": 1}}},
+        {"name": "Красный мундир Эрстании", "desc": "Туловище. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"torso": 2}}},
+        {"name": "Чёрный плащ", "desc": "Туловище. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"torso": 1}}},
+        {"name": "Широкополая шляпа с белыми цветами", "desc": "Голова.", "category": "clothing", "count": 1},
+        {"name": "Обтягивающая спортивная шапочка", "desc": "Голова. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"head": 1}}},
+        {"name": "Резинка для головы", "desc": "Голова.", "category": "clothing", "count": 1},
+        {"name": "Толстые круглые очки", "desc": "Голова.", "category": "clothing", "count": 1},
+        {"name": "Оранжевая шапка", "desc": "Голова. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"head": 1}}},
+        {"name": "Старый кивер Эрстанской армии", "desc": "Голова. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"head": 2}}},
+        {"name": "Бриджи", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 1, "rightLeg": 1}}},
+        {"name": "Полицейские брюки", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 1, "rightLeg": 1}}},
+        {"name": "Песчаные брюки с молнией", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 1, "rightLeg": 1}}},
+        {"name": "Серо-коричневые штаны с ремнём", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 1, "rightLeg": 1}}},
+        {"name": "Шерстяные штаны до колена", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 1, "rightLeg": 1}}},
+        {"name": "Штаны легионера Эрстании", "desc": "Ноги. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"leftLeg": 2, "rightLeg": 2}}},
+        {"name": "Отвратительные зелёные туфли", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Шуе", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Берды", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Длинные кожаные военные ботинки", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Чёрные туфли с упряжкой", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Красные башмаки гангстера", "desc": "Ступни.", "category": "clothing", "count": 1},
+        {"name": "Защитный костюм Граухайт М1", "desc": "Покрывает всё тело. Защита.", "category": "clothing", "count": 1, "bonuses": {"def": {"head": 1, "torso": 2, "leftArm": 2, "rightArm": 2, "leftLeg": 2, "rightLeg": 2}}},
+        {"name": "Открытое платье", "desc": "Одежда.", "category": "clothing", "count": 1},
+        {"name": "Медицинский халат", "desc": "Одежда.", "category": "clothing", "count": 1},
         {"name": "ПОЗБ (пистолет)", "desc": "Попадание 8, дальность 3/6, урон д8.", "category": "weapon", "count": 1},
         {"name": "Барабанный пистолет", "desc": "Попадание 10, дальность 4/6, урон д10.", "category": "weapon", "count": 1},
         {"name": "Винтовка Бернара БУ", "desc": "Попадание 10, дальность 4/8, урон д12.", "category": "weapon", "count": 1},
@@ -171,6 +172,14 @@ def ensure_player_shape(name):
                     sk["characteristics"][k] = 1
         if "abilities" not in sk or not isinstance(sk["abilities"], dict):
             sk["abilities"] = {}
+        if "classSkill" not in sk:
+            sk["classSkill"] = 0
+        if "bonuses" not in sk or not isinstance(sk["bonuses"], dict):
+            sk["bonuses"] = {k: 0 for k in BONUS_KEYS}
+        else:
+            for k in BONUS_KEYS:
+                if k not in sk["bonuses"]:
+                    sk["bonuses"][k] = 0
 
 
 def parse_ability_id(ability_id):
@@ -192,13 +201,17 @@ def parse_ability_id(ability_id):
 
 
 def skills_spent(skills):
-    """Очки тратятся только на способности, не на характеристики."""
+    """Очки тратятся только на способности + классовый навык."""
     spent = 0
     for aid, lvl in skills.get("abilities", {}).items():
         try:
             spent += max(0, int(lvl))
         except (TypeError, ValueError):
             pass
+    try:
+        spent += max(0, int(skills.get("classSkill", 0) or 0))
+    except (TypeError, ValueError):
+        pass
     return spent
 
 
@@ -225,7 +238,6 @@ async def save_state():
     if not r: return
     async with save_lock:
         try:
-            # Собираем все данные в один словарь
             payload = {
                 "dnd:clock_state": json.dumps(clock_state),
                 "dnd:players_data": json.dumps(players_data, ensure_ascii=False),
@@ -234,16 +246,14 @@ async def save_state():
                 "dnd:item_templates": json.dumps(item_templates, ensure_ascii=False),
                 "dnd:pending_trades": json.dumps(pending_trades, ensure_ascii=False)
             }
-            
-            # Если данные не изменились с прошлого раза — ничего не отправляем
+
             current_data_str = str(payload)
             if current_data_str == last_saved_data:
                 return
-            
-            # Отправляем всё одной командой MSET вместо 6 разных SET
+
             await r.mset(payload)
             last_saved_data = current_data_str
-            
+
         except Exception as e:
             print(f"[save_state] Ошибка: {e}", flush=True)
 
@@ -325,6 +335,7 @@ def add_item_to_bucket(bucket, item, count=None):
             existing["count"] = int(existing.get("count", 1) or 1) + count
             return existing
     new_item = {"id": new_id(), "name": name, "desc": desc, "category": cat, "count": count}
+    if "bonuses" in item: new_item["bonuses"] = item["bonuses"]
     bucket.append(new_item)
     return new_item
 
@@ -345,6 +356,7 @@ def take_from_stack(lst, item_id, count):
     take = min(count, avail)
     item["count"] = avail - take
     snapshot = {"name": item.get("name", "") or "", "desc": item.get("desc", "") or "", "category": safe_category(item.get("category", "other"))}
+    if "bonuses" in item: snapshot["bonuses"] = item["bonuses"]
     if item["count"] <= 0:
         try: lst.remove(item)
         except ValueError: pass
@@ -445,7 +457,8 @@ async def handler(websocket):
                     await broadcast_players()
 
             elif msg_type == "base_royals_set":
-                base_royals = max(0, safe_int(data.get("amount"), 0))
+                gid = str(data.get("groupId", "1"))
+                base_royals_dict[gid] = max(0, safe_int(data.get("amount"), 0))
                 await broadcast_social()
 
             elif msg_type == "transfer_royals":
@@ -490,6 +503,38 @@ async def handler(websocket):
                     await broadcast_players()
                     await save_state()
 
+            elif msg_type == "skills_set_bonus":
+                target = data.get("target")
+                key = data.get("key")
+                value = safe_int(data.get("value"), 0)
+                if target and key in BONUS_KEYS:
+                    ensure_player_shape(target)
+                    players_data[target]["skills"].setdefault("bonuses", {})[key] = value
+                    await broadcast_players()
+                    await save_state()
+
+            elif msg_type == "skills_invest_class":
+                player = data.get("player")
+                if player:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    if skills_available(sk) > 0:
+                        cur = int(sk.get("classSkill", 0) or 0)
+                        if cur < 3:
+                            sk["classSkill"] = cur + 1
+                            await broadcast_players()
+                            await save_state()
+
+            elif msg_type == "skills_remove_class":
+                player = data.get("player")
+                if player:
+                    ensure_player_shape(player)
+                    sk = players_data[player]["skills"]
+                    cur = int(sk.get("classSkill", 0) or 0)
+                    if cur > 0:
+                        sk["classSkill"] = cur - 1
+                        await broadcast_players()
+                        await save_state()
 
             elif msg_type == "skills_invest_ability":
                 player = data.get("player")
@@ -502,8 +547,6 @@ async def handler(websocket):
                     tier = parsed["tier"]
                     char_level = int(sk["characteristics"].get(char, 1) or 1)
 
-                    # Разрешение: либо ручной уровень достаточен,
-                    # либо есть вложение в предыдущий ярус
                     tier_unlocked = False
                     if tier == 1:
                         tier_unlocked = True
@@ -516,7 +559,7 @@ async def handler(websocket):
                         cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
                         if cur < 3:
                             sk.setdefault("abilities", {})[aid] = cur + 1
-                            # Автоматическое повышение характеристики за каждое вложение
+                            # Автоповышение характеристики (для отображения)
                             sk["characteristics"][char] = int(sk["characteristics"].get(char, 1)) + 1
                             await broadcast_players()
                             await save_state()
@@ -524,16 +567,17 @@ async def handler(websocket):
             elif msg_type == "skills_remove_ability":
                 player = data.get("player")
                 aid = data.get("abilityId")
-                if player and aid:
+                parsed = parse_ability_id(aid)
+                if player and parsed:
                     ensure_player_shape(player)
                     sk = players_data[player]["skills"]
+                    char = parsed["char"]
                     cur = int(sk.get("abilities", {}).get(aid, 0) or 0)
                     if cur > 0:
                         if cur - 1 <= 0:
                             sk["abilities"].pop(aid, None)
                         else:
                             sk["abilities"][aid] = cur - 1
-                        # Автоматическое понижение характеристики при отмене вложения
                         sk["characteristics"][char] = max(1, int(sk["characteristics"].get(char, 2)) - 1)
                         await broadcast_players()
                         await save_state()
@@ -603,8 +647,7 @@ async def handler(websocket):
                         existing["desc"] = new_item.get("desc", existing.get("desc") or "")
                         existing["category"] = safe_category(new_item.get("category", existing.get("category", "other")))
                         existing["count"] = max(1, safe_int(new_item.get("count", existing.get("count", 1)), 1))
-                        existing["bonuses"] = new_item.get("bonuses", existing.get("bonuses", {}))
-                        snapshot = {"name": tpl.get("name", ""), "desc": tpl.get("desc", "") or "", "category": safe_category(tpl.get("category", "other")), "bonuses": tpl.get("bonuses", {})}
+                        if "bonuses" in new_item: existing["bonuses"] = new_item["bonuses"]
                         await broadcast_social()
 
             elif msg_type == "base_delete":
@@ -679,6 +722,7 @@ async def handler(websocket):
                         existing["desc"] = new_item.get("desc", existing.get("desc") or "")
                         existing["category"] = safe_category(new_item.get("category", existing.get("category", "other")))
                         existing["count"] = max(1, safe_int(new_item.get("count", existing.get("count", 1)), 1))
+                        if "bonuses" in new_item: existing["bonuses"] = new_item["bonuses"]
                         await broadcast_social()
 
             elif msg_type == "template_delete":
@@ -696,6 +740,7 @@ async def handler(websocket):
                     if tpl:
                         ensure_player_shape(target)
                         snapshot = {"name": tpl.get("name", ""), "desc": tpl.get("desc", "") or "", "category": safe_category(tpl.get("category", "other"))}
+                        if "bonuses" in tpl: snapshot["bonuses"] = tpl["bonuses"]
                         give_count = safe_int(count, safe_int(tpl.get("count", 1), 1)) if count is not None else safe_int(tpl.get("count", 1), 1)
                         give_count = max(1, give_count)
                         add_item_to_bucket(players_data[target].setdefault("inventory", []), snapshot, give_count)
